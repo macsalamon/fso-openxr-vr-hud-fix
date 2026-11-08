@@ -1,0 +1,40 @@
+--- a/autoaim-sct.lua
++++ b/autoaim-sct.lua
+@@ -928,7 +928,7 @@
+ 
+ 	end
+ 
+-	function AutoAim:OnFrame() --yes multi, recall run observer check here
++	function AutoAim:OnFrame(hud_pass) --yes multi, recall run observer check here. hud_pass = true when called from "On HUD Draw" (VR HUD fix: the circle is drawn there so it follows the HUD)
+ 
+ 		if not MTIME_OVER_P1 then 
+ 			return 
+@@ -952,13 +952,13 @@
+ 
+ 			--secondary just draws rectangle so can draw in more cases
+ 			if gr.hasViewmode(VM_INTERNAL) or self:Helper_BomberViewOn() then
+-				self:DrawSecondary(draw)
++				if not hud_pass then self:DrawSecondary(draw) end
+ 			end
+ 
+ 			--only draw circle aimer if looking forward
+ 			--recall track messes up the auto aim screen coordinates
+ 			if (gr.hasViewmode(VM_INTERNAL) or gr.hasViewmode(VM_CHASE)) and gr.hasViewmode(VM_CAMERA_LOCKED) then
+-				self:DrawPrimary(player, draw)
++				self:DrawPrimary(player, draw and hud_pass)
+ 			end
+ 
+ 		end
+@@ -1094,6 +1094,12 @@
+ 		end,
+ 		{State="GS_STATE_GAME_PLAY"}
+ 	)
++
++	engine.addHook("On HUD Draw", function()
++			AutoAim:OnFrame(true)
++		end,
++		{State="GS_STATE_GAME_PLAY"}
++	)
+ 
+ 	io.Keybinding["CYCLE_NEXT_PRIMARY"]:registerHook(function()
+ 		AutoAim:Set_FOV(FotG:GetPlayerShip(), true) --"Cycle Primary Weapon Forward"

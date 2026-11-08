@@ -37,10 +37,16 @@ essentially everything since 2011), OpenXR VR.
 
 - Only tested on a Valve Index with Fate of the Galaxy 1.1.2.
 - Built **without text-to-speech and voice recognition** (not needed for VR play; the official build has them).
-- In Fate of the Galaxy, the autotarget circle is drawn by one of the mod's own scripts and still tilts with head roll.
-  That is a change in the mod's script, not in the engine; it is not included here.
+- In Fate of the Galaxy, the autotarget circle is drawn by one of the mod's own scripts and still tilts with head roll
+  unless you also install the [optional script change](fotg/README.md) (FotG 1.1.2 only; included with the FotG team's permission).
 - The HUD texture is 2x the render size, which uses some extra GPU memory. If performance suffers, lower
   `VRHudResolutionScale` (below).
+
+## Optional: FotG autotarget circle
+
+[`fotg/`](fotg/README.md) contains a one-file change to FotG's `autoaim-sct.lua` that makes the autotarget circle follow the HUD
+instead of tilting with head roll. Download `VRHUDfix_optional_FotG_circle_script.zip` from the Releases page and unpack it
+over your Knossos folder (back up the original first).
 
 ## Optional settings
 
