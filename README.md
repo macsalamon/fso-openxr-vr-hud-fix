@@ -17,6 +17,9 @@ A free, community fix for the HUD in **FreeSpace Open 26.0.1 in OpenXR VR**, mad
    The HUD is now rendered once per frame, as seen from the ship, and shown as a flat panel fixed to the ship
    (like a monitor in the cockpit).
 3. **Blurry HUD text** - the HUD is rendered at 2x resolution. Cockpit monitors and gauges are unchanged.
+4. **Grey / red box covering the view when hit** (v0.1.1) - the full-screen damage, sun-glare and explosion flash was
+   being drawn into the HUD panel and turned the whole panel into one opaque box. It is now drawn per eye over the view,
+   as in the stock engine. (Reported in [#1](../../issues/1).)
 
 ## Download and install (no compiling)
 
