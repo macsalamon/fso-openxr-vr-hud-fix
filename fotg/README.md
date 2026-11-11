@@ -1,6 +1,6 @@
 # Optional: FotG autotarget circle follows the HUD
 
-**For Fate of the Galaxy (FotG_R) 1.1.2 only.** Included with the permission of the FotG team; it is their file with a small change.
+**For Fate of the Galaxy (FotG_R) 1.1.2 and 1.1.3** (1.1.3 did not change this file, so the change is identical). Included with the permission of the FotG team; it is their file with a small change.
 Not an official FotG release.
 
 The autotarget circle is drawn by FotG's script `autoaim-sct.lua` from the `On Frame` hook, which runs after the HUD panel,
@@ -13,9 +13,10 @@ changes.
 
 ## Install
 
-1. Back up the original: `Library\FotG_R\FotG_R-1.1.2\data\tables\lua\autoaim-sct.lua`.
-2. Unpack `VRHUDfix_optional_FotG_circle_script.zip` (from the Releases page) into your Knossos folder and confirm "Replace",
-   or copy `Library/FotG_R/FotG_R-1.1.2/data/tables/lua/autoaim-sct.lua` from this folder over the original.
+1. Back up the original: `Library\FotG_R\FotG_R-<your version>\data\tables\lua\autoaim-sct.lua`.
+2. Unpack `VRHUDfix_optional_FotG_circle_script_FotG1.1.3.zip` (or `..._FotG1.1.2.zip`, from the Releases page) into your
+   Knossos folder and confirm "Replace", or copy `Library/FotG_R/FotG_R-1.1.3/data/tables/lua/autoaim-sct.lua` (resp. 1.1.2)
+   from this folder over the original.
 3. A FotG update or "Verify/Repair" will overwrite the file; repeat step 2 afterwards.
 
 ## What changed

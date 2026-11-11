@@ -3,9 +3,10 @@
 A free, community fix for the HUD in **FreeSpace Open 26.0.1 in OpenXR VR**, made while playing
 [Fate of the Galaxy](https://www.fateofthegalaxy.net/) on a Valve Index.
 
-> **Status: early test release.** Confirmed working by one person on one headset (Valve Index) with
-> Fate of the Galaxy 1.1.2. Reports from other VR users are very welcome - see "Feedback". If it holds up,
-> the plan is to submit it to the FreeSpace Open project as a pull request.
+> **Status: early test release (v0.2.0).** Tested on one headset (Valve Index) with Fate of the Galaxy 1.1.2 and 1.1.3.
+> Reports from other VR users are very welcome - see "Feedback". The core HUD fix was also submitted to the FreeSpace Open
+> project as a pull request ([#8020](https://github.com/scp-fs2open/fs2open.github.com/pull/8020)); the FSO developers
+> are reworking it themselves. This repo keeps a working build for 26.0.1 in the meantime.
 > Not affiliated with the FreeSpace Open or Fate of the Galaxy teams.
 
 ## What it fixes
@@ -20,6 +21,13 @@ A free, community fix for the HUD in **FreeSpace Open 26.0.1 in OpenXR VR**, mad
 4. **Grey / red box covering the view when hit** (v0.1.1) - the full-screen damage, sun-glare and explosion flash was
    being drawn into the HUD panel and turned the whole panel into one opaque box. It is now drawn per eye over the view,
    as in the stock engine. (Reported in [#1](../../issues/1).)
+5. **Target frame as a billboard** (v0.2.0) - the frame around your target (with its name / class / distance) is no longer
+   drawn on the flat HUD panel, where it was stretched towards the edges and vanished when the target was far to the side.
+   It is now drawn at the direction of the target as a flat, undistorted marker that always faces you (like a tangent to a
+   sphere around the ship): same shape wherever you look, never cut off at the HUD edge, and visible even if the target is
+   beside or behind you. It helps to find dark targets that blend into the backdrop. It applies to your current target and
+   to other bracketed objects (e.g. hotkeyed targets), with up to 4 texts at once; attacker dots and subsystem brackets are
+   unchanged. To use the old flat frame, set `VRHudBillboardBrackets=0` (below).
 
 ## Download and install (no compiling)
 
@@ -38,18 +46,19 @@ essentially everything since 2011), OpenXR VR.
 
 ## Known limitations
 
-- Only tested on a Valve Index with Fate of the Galaxy 1.1.2.
+- Only tested on a Valve Index with Fate of the Galaxy 1.1.2 and 1.1.3.
+- OpenGL only.
 - Built **without text-to-speech and voice recognition** (not needed for VR play; the official build has them).
 - In Fate of the Galaxy, the autotarget circle is drawn by one of the mod's own scripts and still tilts with head roll
-  unless you also install the [optional script change](fotg/README.md) (FotG 1.1.2 only; included with the FotG team's permission).
+  unless you also install the [optional script change](fotg/README.md) (FotG 1.1.2 and 1.1.3; included with the FotG team's permission).
 - The HUD texture is 2x the render size, which uses some extra GPU memory. If performance suffers, lower
   `VRHudResolutionScale` (below).
 
 ## Optional: FotG autotarget circle
 
 [`fotg/`](fotg/README.md) contains a one-file change to FotG's `autoaim-sct.lua` that makes the autotarget circle follow the HUD
-instead of tilting with head roll. Download `VRHUDfix_optional_FotG_circle_script.zip` from the Releases page and unpack it
-over your Knossos folder (back up the original first).
+instead of tilting with head roll. Download `VRHUDfix_optional_FotG_circle_script_FotG1.1.3.zip` (or `..._FotG1.1.2.zip` for the
+old version) from the Releases page and unpack it over your Knossos folder (back up the original first).
 
 ## Optional settings
 
@@ -58,6 +67,7 @@ In `fs2_open.ini`, section `[Default]`, with the game closed
 
 | Key | Default | Meaning |
 |---|---|---|
+| `VRHudBillboardBrackets` | `1` | `0` switches the billboard target frame off and uses the old flat frame |
 | `VRHudResolutionScale` | `2` | HUD texture resolution factor, 1.0 - 4.0 (1 = engine default) |
 | `VRHudScale` | - | HUD size factor, 0.2 - 1.5 (only affects mods whose HUD uses a global scale) |
 | `VRHudDistance` | `1000` | Stereo depth of the HUD panel in metres (the panel covers a fixed angle, so this changes depth, not size) |
@@ -80,8 +90,8 @@ git apply /path/to/vr_hud_projection_fix.patch
 
 Build settings used for the release exe: Windows, MSVC 2022 (Build Tools), Release,
 `-DFORCED_SIMD_INSTRUCTIONS=AVX -DFSO_USE_SPEECH=OFF -DFSO_USE_VOICEREC=OFF`.
-The patch touches 18 files (about 580 added lines): the 3D projection and view setup, the HUD, and the OpenGL
-render-target/state code.
+The patch touches 19 files (about 1130 added lines): the 3D projection and view setup, the HUD (including the target
+brackets), and the OpenGL render-target/state code.
 
 ## Feedback
 
