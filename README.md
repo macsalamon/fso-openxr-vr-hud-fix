@@ -57,7 +57,8 @@ essentially everything since 2011), OpenXR VR.
 ## Optional: FotG autotarget circle
 
 [`fotg/`](fotg/README.md) contains a one-file change to FotG's `autoaim-sct.lua` that makes the autotarget circle follow the HUD
-instead of tilting with head roll. Download `VRHUDfix_optional_FotG_circle_script_FotG1.1.3.zip` (or `..._FotG1.1.2.zip` for the
+instead of tilting with head roll, and (v0.2.1) replaces the full-screen orange targeting-computer tint with a soft glow in the
+middle of the HUD (or switches it off; settings explained there). Download `VRHUDfix_optional_FotG_circle_script_FotG1.1.3.zip` (or `..._FotG1.1.2.zip` for the
 old version) from the Releases page and unpack it over your Knossos folder (back up the original first).
 
 ## Optional settings

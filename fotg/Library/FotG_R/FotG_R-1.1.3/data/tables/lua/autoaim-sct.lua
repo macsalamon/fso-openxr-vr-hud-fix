@@ -8,7 +8,12 @@
 
 AutoAim = {
 
-	occluder_color = {165, 103, 23, 50},  --half transparent dark tan color
+	occluder_color = {165, 103, 43, 20},  --half transparent dark tan color
+	--targeting computer tint (VR HUD fix): "center" = soft tint only around the middle of the HUD (default),
+	--"full" = whole screen (original behaviour, very annoying in VR), "off" = no tint (the red box around the reticle remains)
+	occluder_mode = "center",
+	occluder_center_radius = 0.21, --"center" mode: tint radius as a fraction of the screen height
+	occluder_center_steps = 6, --"center" mode: number of stacked circles, more = smoother edge
 	base_gauge_id_center = 9,
 	base_gauge_id_lead = 0,
 	default_fvec = 1500,
@@ -915,15 +920,36 @@ AutoAim.button_info = {
 
 	end
 
-	function AutoAim:DrawSecondary(draw) --yes multi, recall observer check already ran in On Frame function
+	function AutoAim:DrawSecondary(draw, hud_pass) --yes multi, recall observer check already ran in On Frame function
 
 		--if self.is_multiplayer then return end
 
 		--draw occluder, the gauge has already been toggled on
 		if draw and self.SecondaryAutoAimOn then
 			local occ = self.occluder_color
-			gr.setColor(occ[1], occ[2], occ[3], occ[4])
-			gr.drawRectangle(0, 0, gr.getScreenWidth(), gr.getScreenHeight(), true)
+			local mode = self.occluder_mode
+
+			if mode == "full" then
+				--whole screen, from the On Frame hook (original behaviour)
+				if not hud_pass then
+					gr.setColor(occ[1], occ[2], occ[3], occ[4])
+					gr.drawRectangle(0, 0, gr.getScreenWidth(), gr.getScreenHeight(), true)
+				end
+			elseif mode == "center" then
+				--VR HUD fix: soft tint around the middle of the HUD only, drawn from the On HUD Draw hook so it is part of the HUD panel
+				if hud_pass then
+					local sw = gr.getScreenWidth()
+					local sh = gr.getScreenHeight()
+					local steps = math.max(1, math.floor(self.occluder_center_steps))
+					local max_r = sh * self.occluder_center_radius
+					local step_alpha = math.max(1, math.floor(occ[4] / steps + 0.5))
+					gr.setColor(occ[1], occ[2], occ[3], step_alpha)
+					for k = steps, 1, -1 do
+						gr.drawCircle(max_r * k / steps, sw * 0.5, sh * 0.5, true)
+					end
+				end
+			end
+			--any other value (e.g. "off"): no tint
 		end
 
 	end
@@ -952,7 +978,7 @@ AutoAim.button_info = {
 
 			--secondary just draws rectangle so can draw in more cases
 			if gr.hasViewmode(VM_INTERNAL) or self:Helper_BomberViewOn() then
-				if not hud_pass then self:DrawSecondary(draw) end
+				self:DrawSecondary(draw, hud_pass)
 			end
 
 			--only draw circle aimer if looking forward
