@@ -32,6 +32,8 @@ A free, community fix for the HUD in **FreeSpace Open 26.0.1 in OpenXR VR**, mad
 ## Download and install (no compiling)
 
 1. Download `VRHUDfix_FSO26.0.1_AVX_package.zip` from the [Releases](../../releases) page.
+   (Fate of the Galaxy 1.1.3 players who want everything in one go can take `VRHUDfix_ALL_IN_ONE_FotG1.1.3.zip` instead: engine
+   plus the optional FotG script, see the instructions inside.)
 2. Close Knossos and the game. **Back up** your Knossos `Library` folder (at least `Library\bin\FSO-26.0.1\windows\x64_avx`).
 3. Unpack the zip into your Knossos folder so that
    `Library\bin\FSO-26.0.1\windows\x64_avx\fs2_open_26_0_1_x64_AVX.exe` is overwritten (confirm "Replace").
