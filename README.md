@@ -3,7 +3,7 @@
 A free, community fix for the HUD in **FreeSpace Open 26.0.1 in OpenXR VR**, made while playing
 [Fate of the Galaxy](https://www.fateofthegalaxy.net/) on a Valve Index.
 
-> **Status: early test release (v0.2.0).** Tested on one headset (Valve Index) with Fate of the Galaxy 1.1.2 and 1.1.3.
+> **Status: early test release (v0.3.0).** Tested on one headset (Valve Index) with Fate of the Galaxy 1.1.2, 1.1.3 and 2.0.2.
 > Reports from other VR users are very welcome - see "Feedback". The core HUD fix was also submitted to the FreeSpace Open
 > project as a pull request ([#8020](https://github.com/scp-fs2open/fs2open.github.com/pull/8020)); the FSO developers
 > are reworking it themselves. This repo keeps a working build for 26.0.1 in the meantime.
@@ -29,7 +29,23 @@ A free, community fix for the HUD in **FreeSpace Open 26.0.1 in OpenXR VR**, mad
    to other bracketed objects (e.g. hotkeyed targets), with up to 4 texts at once; attacker dots and subsystem brackets are
    unchanged. To use the old flat frame, set `VRHudBillboardBrackets=0` (below).
 
-## Download and install (no compiling)
+## Which download do I need?
+
+Get everything from the [Releases](../../releases) page. Fate of the Galaxy 2.x runs on the **SDL3** engine, FotG 1.x on the
+normal **SDL2** engine - the fix exists for both:
+
+| You play | Engine package | Optional FotG script | Or everything in one |
+|---|---|---|---|
+| FotG **2.0.2** ("FSO 26.0.1-SDL3") | `VRHUDfix_FSO26.0.1-SDL3_package.zip` | `VRHUDfix_optional_FotG_circle_script_FotG2.0.2.zip` | `VRHUDfix_ALL_IN_ONE_FotG2.0.2_SDL3.zip` |
+| FotG 1.1.3 ("FSO 26.0.1") | `VRHUDfix_FSO26.0.1_AVX_package.zip` | `..._FotG1.1.3.zip` | `VRHUDfix_ALL_IN_ONE_FotG1.1.3.zip` |
+| FotG 1.1.2 ("FSO 26.0.1") | `VRHUDfix_FSO26.0.1_AVX_package.zip` | `..._FotG1.1.2.zip` | - |
+
+Check which engine your mod uses in Knossos (engine name in the mod's details). The install steps are inside each zip; the SDL2
+steps are below, the SDL3 package replaces `Library\bin\FSO_2601SDL3-26.0.1-1\windows-x64\fs2_open_26_0_1_sdl3_x64_SSE2.exe`
+the same way (see its README). Controllers: SDL3 identifies game controllers differently from SDL2, so if you switch from FotG 1.x
+to 2.x you may have to set up your controllers again in the game's controls options.
+
+## Download and install, SDL2 engine (FotG 1.x, no compiling)
 
 1. Download `VRHUDfix_FSO26.0.1_AVX_package.zip` from the [Releases](../../releases) page.
    (Fate of the Galaxy 1.1.3 players who want everything in one go can take `VRHUDfix_ALL_IN_ONE_FotG1.1.3.zip` instead: engine
@@ -48,11 +64,11 @@ essentially everything since 2011), OpenXR VR.
 
 ## Known limitations
 
-- Only tested on a Valve Index with Fate of the Galaxy 1.1.2 and 1.1.3.
+- Only tested on a Valve Index with Fate of the Galaxy 1.1.2, 1.1.3 and 2.0.2.
 - OpenGL only.
 - Built **without text-to-speech and voice recognition** (not needed for VR play; the official build has them).
 - In Fate of the Galaxy, the autotarget circle is drawn by one of the mod's own scripts and still tilts with head roll
-  unless you also install the [optional script change](fotg/README.md) (FotG 1.1.2 and 1.1.3; included with the FotG team's permission).
+  unless you also install the [optional script change](fotg/README.md) (FotG 1.1.2, 1.1.3 and 2.0.2; included with the FotG team's permission).
 - The HUD texture is 2x the render size, which uses some extra GPU memory. If performance suffers, lower
   `VRHudResolutionScale` (below).
 
@@ -60,8 +76,9 @@ essentially everything since 2011), OpenXR VR.
 
 [`fotg/`](fotg/README.md) contains a one-file change to FotG's `autoaim-sct.lua` that makes the autotarget circle follow the HUD
 instead of tilting with head roll, and (v0.2.1) replaces the full-screen orange targeting-computer tint with a soft glow in the
-middle of the HUD (or switches it off; settings explained there). Download `VRHUDfix_optional_FotG_circle_script_FotG1.1.3.zip` (or `..._FotG1.1.2.zip` for the
-old version) from the Releases page and unpack it over your Knossos folder (back up the original first).
+middle of the HUD (or switches it off; settings explained there). Download the script zip for your FotG version
+(`..._FotG2.0.2.zip`, `..._FotG1.1.3.zip` or `..._FotG1.1.2.zip`) from the Releases page and unpack it over your Knossos
+folder (back up the original first).
 
 ## Optional settings
 
@@ -91,7 +108,17 @@ git checkout release_26_0_1
 git apply /path/to/vr_hud_projection_fix.patch
 ```
 
-Build settings used for the release exe: Windows, MSVC 2022 (Build Tools), Release,
+For the **SDL3 build** (FotG 2.x), [`patch/vr_hud_projection_fix_sdl3_26_0_1.patch`](patch/vr_hud_projection_fix_sdl3_26_0_1.patch)
+is the same fix against the branch `sdl3_26_0_1` (commit `649f7fcfbcbe36833d96dccb1b620a95e2ad13c8`) of
+[notimaginative/fs2open.github.com](https://github.com/notimaginative/fs2open.github.com) (the official 26.0.1 plus the SDL3 port):
+
+```
+git clone --branch sdl3_26_0_1 https://github.com/notimaginative/fs2open.github.com.git
+cd fs2open.github.com
+git apply /path/to/vr_hud_projection_fix_sdl3_26_0_1.patch
+```
+
+Build settings used for the release exes: Windows, MSVC 2022 (Build Tools), Release,
 `-DFORCED_SIMD_INSTRUCTIONS=AVX -DFSO_USE_SPEECH=OFF -DFSO_USE_VOICEREC=OFF`.
 The patch touches 19 files (about 1130 added lines): the 3D projection and view setup, the HUD (including the target
 brackets), and the OpenGL render-target/state code.

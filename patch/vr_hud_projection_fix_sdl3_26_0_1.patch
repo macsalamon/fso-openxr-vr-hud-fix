@@ -1,0 +1,1658 @@
+diff --git a/code/graphics/matrix.cpp b/code/graphics/matrix.cpp
+index c768115..82f9649 100644
+--- a/code/graphics/matrix.cpp
++++ b/code/graphics/matrix.cpp
+@@ -1,7 +1,13 @@
+ 
+ #include "matrix.h"
+ 
++#include "graphics/material.h"
++#include "graphics/render.h"
+ #include "graphics/util/UniformBuffer.h"
++#include "osapi/osregistry.h"
++
++#include <array>
++#include <variant>
+ 
+ #include <graphics/util/uniform_structs.h>
+ 
+@@ -305,6 +311,109 @@ void gr_end_2d_matrix()
+ 
+ static bool scale_matrix_set = false;
+ 
++// Draw the VR HUD texture as one flat panel that is fixed to the ship: it hangs 'distance' in front of the virtual
++// HUD camera along the ship's axes, so it stays put relative to the cockpit when the head turns, tilts or moves.
++// The panel always covers the same angle as seen from the virtual HUD camera, so the HUD keeps the layout it was
++// designed with (brackets sit on their targets) whatever the distance. The distance only sets how far away the panel
++// looks and how much stereo depth it has; the further it is, the less the head position matters for the brackets.
++//
++//  texture        bitmap handle of the HUD render target (drawn upright, like the normal screen, y pointing down)
++//  eye_fov        the asymmetric frustum of the eye being rendered
++//  eye_pos/orient position and orientation of that eye in the world (head included)
++//  hud_pos/orient position and orientation of the virtual HUD camera (ship orientation, no head rotation)
++//  distance       how far in front of the virtual HUD camera the panel hangs, in world units (meters)
++//  scale_x/y      Matrix_scale of the virtual HUD camera, i.e. how its view maps onto the HUD texture
++//  canvas_w/h     size of the HUD texture in pixels
++void gr_vr_hud_draw(int texture, const fov_t& eye_fov, const vec3d* eye_pos, const matrix* eye_orient,
++	const vec3d* hud_pos, const matrix* hud_orient, float distance,
++	float scale_x, float scale_y, float canvas_w, float canvas_h)
++{
++	if (texture < 0 || !std::holds_alternative<asymmetric_fov>(eye_fov))
++		return;
++
++	const float z_near = distance * 0.1f;
++	const float z_far = distance * 10.0f;
++
++	// where the virtual HUD camera is, relative to the eye (the head can be away from the camera's resting position)
++	vec3d hud_offset;
++	vm_vec_sub(&hud_offset, hud_pos, eye_pos);
++
++	// The eye's projection, built the same way as gr_set_proj_matrix() does it. The stored angles are in "zoom" units;
++	// the frustum the engine really renders the world with is those angles times PROJ_FOV_FACTOR (see g3_set_fov()).
++	const asymmetric_fov afov = std::get<asymmetric_fov>(eye_fov) * PROJ_FOV_FACTOR;
++	matrix4 proj;
++	create_perspective_projection_matrix(&proj,
++		tanf(afov.left) * z_near, tanf(afov.right) * z_near,
++		tanf(afov.down) * z_near, tanf(afov.up) * z_near,
++		z_near, z_far);
++
++	// only the eye's rotation matters: the panel is far enough away that head movement is irrelevant
++	const matrix4 view = create_view_matrix(&vmd_zero_vector, eye_orient);
++
++	// where the corners of the HUD texture are, relative to the eye. A HUD pixel (px,py) sits in the direction
++	//   forward + (px - w/2) * 2 / (w * scale_x) * right - (py - h/2) * 2 / (h * scale_y) * up
++	// of the virtual HUD camera.
++	const float kx = distance * 2.0f / (canvas_w * scale_x);
++	const float ky = distance * 2.0f / (canvas_h * scale_y);
++
++	struct hud_vertex {
++		float x, y, z;
++		float u, v;
++	};
++
++	auto corner = [&](float px, float py, float u, float v) {
++		hud_vertex vert;
++
++		vec3d p = hud_orient->vec.fvec;
++		vm_vec_scale(&p, distance);
++		vm_vec_add2(&p, &hud_offset);
++		vm_vec_scale_add2(&p, &hud_orient->vec.rvec, (px - canvas_w * 0.5f) * kx);
++		vm_vec_scale_add2(&p, &hud_orient->vec.uvec, -(py - canvas_h * 0.5f) * ky);
++
++		vert.x = p.xyz.x;
++		vert.y = p.xyz.y;
++		vert.z = p.xyz.z;
++		vert.u = u;
++		vert.v = v;
++		return vert;
++	};
++
++	// the texture was rendered like the normal screen, so its first row is the bottom of the HUD
++	auto verts = std::array<hud_vertex, 4>{
++		corner(0.0f, 0.0f, 0.0f, 1.0f),
++		corner(canvas_w, 0.0f, 1.0f, 1.0f),
++		corner(0.0f, canvas_h, 0.0f, 0.0f),
++		corner(canvas_w, canvas_h, 1.0f, 0.0f)
++	};
++
++	vertex_layout layout;
++	layout.add_vertex_component(vertex_format_data::POSITION3, sizeof(hud_vertex), offsetof(hud_vertex, x));
++	layout.add_vertex_component(vertex_format_data::TEX_COORD2, sizeof(hud_vertex), offsetof(hud_vertex, u));
++
++	material mat;
++	material_set_interface(&mat, texture, true, 1.0f);
++	// the HUD texture holds colors that were already multiplied by their alpha while it was drawn
++	mat.set_blend_mode(ALPHA_BLEND_PREMULTIPLIED);
++
++	const matrix4 saved_projection = gr_projection_matrix;
++	const matrix4 saved_view = gr_view_matrix;
++	const matrix4 saved_model_view = gr_model_view_matrix;
++
++	gr_set_viewport(0, 0, gr_screen.max_w, gr_screen.max_h);
++
++	gr_projection_matrix = proj;
++	gr_view_matrix = view;
++	gr_model_view_matrix = view;
++	matrix_uniform_up_to_date = false;
++
++	gr_render_primitives_immediate(&mat, PRIM_TYPE_TRISTRIP, &layout, 4, verts.data(), sizeof(verts));
++
++	gr_projection_matrix = saved_projection;
++	gr_view_matrix = saved_view;
++	gr_model_view_matrix = saved_model_view;
++	matrix_uniform_up_to_date = false;
++}
++
+ void gr_push_scale_matrix(const vec3d *scale_factor)
+ {
+ 	if ( (scale_factor->xyz.x == 1) && (scale_factor->xyz.y == 1) && (scale_factor->xyz.z == 1) )
+@@ -419,3 +528,244 @@ void gr_deactivate_ortho_proj_override()
+ 	gr_ortho_override_active   = false;
+ 	gr_ortho_override_distance = 0.0f;
+ }
++
++
++// ---------------------------------------------------------------------------------------------------------------------
++// VR target brackets (see matrix.h)
++// ---------------------------------------------------------------------------------------------------------------------
++static SCP_vector<vr_overlay_bracket> Vr_overlay_queue;
++static bool Vr_overlay_active = false;
++
++// "VRHudBillboardBrackets=0" in the [Default] section of fs2_open.ini switches the feature off. Read once.
++static bool vr_overlay_feature_on()
++{
++	static int on = -1;
++
++	if (on < 0) {
++		on = 1;
++
++		const char* configured = os_config_read_string("Default", "VRHudBillboardBrackets", nullptr);
++		if (configured != nullptr && atoi(configured) == 0)
++			on = 0;
++
++		mprintf(("VR HUD: billboard target brackets are %s\n", on ? "on" : "off"));
++	}
++
++	return on != 0;
++}
++
++void vr_overlay_reset() { Vr_overlay_queue.clear(); }
++void vr_overlay_set_active(bool active) { Vr_overlay_active = active; }
++bool vr_overlay_brackets_active() { return Vr_overlay_active && vr_overlay_feature_on(); }
++void vr_overlay_add(vr_overlay_bracket&& bracket)
++{
++	// the same object can be bracketed by more than one gauge entry: keep one frame, with the most complete label
++	for (auto& existing : Vr_overlay_queue) {
++		if (bracket.objnum >= 0 && existing.objnum == bracket.objnum) {
++			if (existing.name.empty() && existing.cls.empty() && existing.dist.empty()) {
++				existing.name = bracket.name;
++				existing.cls = bracket.cls;
++				existing.font_num = bracket.font_num;
++			}
++			if (existing.dist.empty())
++				existing.dist = bracket.dist;
++			return;
++		}
++	}
++
++	Vr_overlay_queue.push_back(std::move(bracket));
++}
++SCP_vector<vr_overlay_bracket>& vr_overlay_queue() { return Vr_overlay_queue; }
++
++void gr_vr_overlay_draw(int label_texture, const fov_t& eye_fov, const vec3d* eye_pos, const matrix* eye_orient,
++	const vec3d* hud_pos, const matrix* hud_orient, float distance,
++	float scale_x, float scale_y, float canvas_w, float canvas_h)
++{
++	if (Vr_overlay_queue.empty() || !std::holds_alternative<asymmetric_fov>(eye_fov))
++		return;
++
++	// the same eye projection and rotation-only view as the HUD panel (see gr_vr_hud_draw())
++	const float z_near = distance * 0.1f;
++	const float z_far = distance * 10.0f;
++
++	const asymmetric_fov afov = std::get<asymmetric_fov>(eye_fov) * PROJ_FOV_FACTOR;
++	matrix4 proj;
++	create_perspective_projection_matrix(&proj,
++		tanf(afov.left) * z_near, tanf(afov.right) * z_near,
++		tanf(afov.down) * z_near, tanf(afov.up) * z_near,
++		z_near, z_far);
++	const matrix4 view = create_view_matrix(&vmd_zero_vector, eye_orient);
++
++	vec3d hud_offset;
++	vm_vec_sub(&hud_offset, hud_pos, eye_pos);
++
++	// how many HUD pixels fit into one unit of tangent at the centre of the HUD
++	const float fx = canvas_w * scale_x * 0.5f;
++	const float fy = canvas_h * scale_y * 0.5f;
++
++	// sizes in HUD pixels
++	constexpr float THICKNESS = 1.0f;
++	constexpr float PADDING = 5.0f;
++	constexpr float MIN_HALF_SIZE = 18.0f;
++	constexpr float LABEL_GAP = 4.0f;
++
++	struct hud_vertex {
++		float x, y, z;
++		float u, v;
++	};
++
++	const matrix4 saved_projection = gr_projection_matrix;
++	const matrix4 saved_view = gr_view_matrix;
++	const matrix4 saved_model_view = gr_model_view_matrix;
++
++	gr_set_viewport(0, 0, gr_screen.max_w, gr_screen.max_h);
++	gr_projection_matrix = proj;
++	gr_view_matrix = view;
++	gr_model_view_matrix = view;
++	matrix_uniform_up_to_date = false;
++
++	for (const auto& e : Vr_overlay_queue) {
++		// direction of the target as seen from the virtual HUD camera
++		vec3d dir;
++		vm_vec_sub(&dir, &e.pos, hud_pos);
++		if (vm_vec_mag(&dir) < 0.01f)
++			continue;
++		vm_vec_normalize(&dir);
++
++		// the frame's axes: the ship's right and up axes, projected onto the plane the frame stands on
++		vec3d right = hud_orient->vec.rvec;
++		vm_vec_scale_add2(&right, &dir, -vm_vec_dot(&right, &dir));
++		if (vm_vec_mag(&right) < 0.001f) {
++			// looking straight along the ship's right axis: fall back to the up axis
++			right = hud_orient->vec.uvec;
++			vm_vec_scale_add2(&right, &dir, -vm_vec_dot(&right, &dir));
++		}
++		vm_vec_normalize(&right);
++
++		vec3d up;
++		vm_vec_cross(&up, &dir, &right);
++		if (vm_vec_dot(&up, &hud_orient->vec.uvec) < 0.0f)
++			vm_vec_negate(&up);
++
++		// extent of the bounding box on that plane (tangent units), seen from the virtual HUD camera
++		float a_min = 1e9f, a_max = -1e9f, b_min = 1e9f, b_max = -1e9f;
++		bool clamped = false;
++
++		for (const auto& corner : e.corners) {
++			vec3d v;
++			vm_vec_sub(&v, &corner, hud_pos);
++			const float len = vm_vec_mag(&v);
++			const float depth = vm_vec_dot(&v, &dir);
++
++			if (depth <= 0.2f * len) {
++				clamped = true;		// the corner is (almost) beside or behind us: the target is huge and close
++				continue;
++			}
++
++			const float a = vm_vec_dot(&v, &right) / depth;
++			const float b = vm_vec_dot(&v, &up) / depth;
++			a_min = std::min(a_min, a); a_max = std::max(a_max, a);
++			b_min = std::min(b_min, b); b_max = std::max(b_max, b);
++		}
++
++		if (clamped || a_min > a_max) {
++			a_min = b_min = -2.0f;
++			a_max = b_max = 2.0f;
++		}
++
++		// the frame in HUD pixels: centre and half size, with similar padding and minimum size as the HUD frame has
++		const float cx = 0.5f * (a_min + a_max) * fx;
++		const float cy = 0.5f * (b_min + b_max) * fy;
++		const float hw = std::max(0.5f * (a_max - a_min) * fx + PADDING, MIN_HALF_SIZE);
++		const float hh = std::max(0.5f * (b_max - b_min) * fy + PADDING, MIN_HALF_SIZE);
++
++		// HUD pixel (px right, py up, relative to the target direction) -> position relative to the eye
++		auto point = [&](float px, float py) {
++			vec3d p = dir;
++			vm_vec_scale_add2(&p, &right, px / fx);
++			vm_vec_scale_add2(&p, &up, py / fy);
++			vm_vec_scale(&p, distance);
++			vm_vec_add2(&p, &hud_offset);
++			return p;
++		};
++
++		// ---- the frame: corner brackets, 25% of the way along each side, like the HUD's own frame
++		SCP_vector<vec3d> tris;
++		tris.reserve(4 * 2 * 6);
++
++		auto rect = [&](float x0, float y0, float x1, float y1) {
++			const vec3d p00 = point(x0, y0), p10 = point(x1, y0), p01 = point(x0, y1), p11 = point(x1, y1);
++			tris.push_back(p00); tris.push_back(p10); tris.push_back(p11);
++			tris.push_back(p00); tris.push_back(p11); tris.push_back(p01);
++		};
++
++		const float arm_x = std::max(hw * 0.5f, THICKNESS * 2.0f);
++		const float arm_y = std::max(hh * 0.5f, THICKNESS * 2.0f);
++
++		for (int sx = -1; sx <= 1; sx += 2) {
++			for (int sy = -1; sy <= 1; sy += 2) {
++				const float ox = cx + sx * hw;
++				const float oy = cy + sy * hh;
++				// horizontal arm
++				rect(ox, oy, ox - sx * arm_x, oy - sy * THICKNESS);
++				// vertical arm
++				rect(ox, oy, ox - sx * THICKNESS, oy - sy * arm_y);
++			}
++		}
++
++		{
++			color frame_clr;
++			gr_init_alphacolor(&frame_clr, e.clr.red, e.clr.green, e.clr.blue, 255);
++
++			material mat;
++			material_set_unlit_color(&mat, -1, &frame_clr, true, false);
++
++			vertex_layout layout;
++			layout.add_vertex_component(vertex_format_data::POSITION3, sizeof(vec3d), 0);
++
++			gr_render_primitives_immediate(&mat, PRIM_TYPE_TRIS, &layout, static_cast<int>(tris.size()), tris.data(), tris.size() * sizeof(vec3d));
++		}
++
++		// ---- the label, centred under the frame
++		if (label_texture >= 0 && e.label_slot >= 0 && e.label_w > 0 && e.label_h > 0) {
++			const float lw = static_cast<float>(e.label_w);
++			const float lh = static_cast<float>(e.label_h);
++
++			// the label texture shows the bottom-left corner of the logical screen: logical y runs top to bottom
++			const float slot_top = canvas_h - static_cast<float>(VR_LABEL_H) + static_cast<float>(e.label_slot * VR_LABEL_SLOT_H);
++			const float u1 = lw / static_cast<float>(VR_LABEL_W);
++			const float v_top = (canvas_h - slot_top) / static_cast<float>(VR_LABEL_H);
++			const float v_bottom = (canvas_h - (slot_top + lh)) / static_cast<float>(VR_LABEL_H);
++
++			const float x0 = cx - lw * 0.5f, x1 = cx + lw * 0.5f;
++			const float y_top = cy - hh - LABEL_GAP, y_bottom = y_top - lh;
++
++			auto vtx = [&](float px, float py, float u, float v) {
++				const vec3d p = point(px, py);
++				return hud_vertex{ p.xyz.x, p.xyz.y, p.xyz.z, u, v };
++			};
++
++			auto verts = std::array<hud_vertex, 4>{
++				vtx(x0, y_top, 0.0f, v_top),
++				vtx(x1, y_top, u1, v_top),
++				vtx(x0, y_bottom, 0.0f, v_bottom),
++				vtx(x1, y_bottom, u1, v_bottom)
++			};
++
++			vertex_layout layout;
++			layout.add_vertex_component(vertex_format_data::POSITION3, sizeof(hud_vertex), offsetof(hud_vertex, x));
++			layout.add_vertex_component(vertex_format_data::TEX_COORD2, sizeof(hud_vertex), offsetof(hud_vertex, u));
++
++			material mat;
++			material_set_interface(&mat, label_texture, true, 1.0f);
++			mat.set_blend_mode(ALPHA_BLEND_PREMULTIPLIED);
++
++			gr_render_primitives_immediate(&mat, PRIM_TYPE_TRISTRIP, &layout, 4, verts.data(), sizeof(verts));
++		}
++	}
++
++	gr_projection_matrix = saved_projection;
++	gr_view_matrix = saved_view;
++	gr_model_view_matrix = saved_model_view;
++	matrix_uniform_up_to_date = false;
++}
+diff --git a/code/graphics/matrix.h b/code/graphics/matrix.h
+index 129301a..29974e6 100644
+--- a/code/graphics/matrix.h
++++ b/code/graphics/matrix.h
+@@ -31,6 +31,43 @@ void gr_end_view_matrix();
+ void gr_set_2d_matrix(/*int x, int y, int w, int h*/);
+ void gr_end_2d_matrix();
+ 
++// VR: draw the HUD texture as a panel that is fixed to the ship. See the definition for the parameters.
++void gr_vr_hud_draw(int texture, const fov_t& eye_fov, const vec3d* eye_pos, const matrix* eye_orient,
++	const vec3d* hud_pos, const matrix* hud_orient, float distance,
++	float scale_x, float scale_y, float canvas_w, float canvas_h);
++
++// VR target brackets. While the HUD texture is drawn, the target frame of the engine's bracket gauge is not drawn into
++// it. It is queued here instead and drawn for each eye as a frame that stands on the tangent plane of a sphere around the
++// ship, at the direction of the target: always upright to the ship, never stretched, and not cut off at the edge of the HUD
++// texture. The name text is rendered into a small label texture (one slot per bracket) and shown under the frame.
++constexpr int VR_LABEL_SLOTS = 4;
++constexpr int VR_LABEL_W = 640;			// size of the label texture in logical pixels
++constexpr int VR_LABEL_SLOT_H = 96;
++constexpr int VR_LABEL_H = VR_LABEL_SLOTS * VR_LABEL_SLOT_H;
++
++struct vr_overlay_bracket {
++	vec3d corners[8];		// world space corners of the target's bounding box
++	vec3d pos;				// world position of the target
++	color clr;
++	SCP_string name, cls, dist;		// label lines (may be empty)
++	int objnum = -1;		// used to merge duplicates
++	int font_num = -1;
++	int label_slot = -1;	// set by the label pass: where the text is, and how big it is (logical pixels)
++	int label_w = 0;
++	int label_h = 0;
++};
++
++void vr_overlay_reset();								// start of a HUD pass: forget last frame's brackets
++void vr_overlay_set_active(bool active);				// true while the HUD texture is being drawn
++bool vr_overlay_brackets_active();						// true if the bracket gauge should queue its brackets instead of drawing them
++void vr_overlay_add(vr_overlay_bracket&& bracket);
++SCP_vector<vr_overlay_bracket>& vr_overlay_queue();
++
++// Draws the queued brackets for one eye. Parameters like gr_vr_hud_draw(); label_texture is the label texture or -1.
++void gr_vr_overlay_draw(int label_texture, const fov_t& eye_fov, const vec3d* eye_pos, const matrix* eye_orient,
++	const vec3d* hud_pos, const matrix* hud_orient, float distance,
++	float scale_x, float scale_y, float canvas_w, float canvas_h);
++
+ void gr_push_scale_matrix(const vec3d *scale_factor);
+ void gr_pop_scale_matrix();
+ 
+diff --git a/code/graphics/opengl/gropengl.cpp b/code/graphics/opengl/gropengl.cpp
+index 3fcdc31..dc9ca78 100644
+--- a/code/graphics/opengl/gropengl.cpp
++++ b/code/graphics/opengl/gropengl.cpp
+@@ -242,10 +242,15 @@ void gr_opengl_set_clip(int x, int y, int w, int h, int resize_mode)
+ 	}
+ 
+ 	GL_state.ScissorTest(GL_TRUE);
++
++	// the VR HUD texture can have more pixels than the logical screen; the clip rectangle is in logical pixels
++	const float scale = Gr_vr_hud_scale;
++	auto px = [scale](int v) { return static_cast<GLint>(lroundf(v * scale)); };
++
+ 	if(GL_rendering_to_texture) {
+-		glScissor(x, y, w, h);
++		glScissor(px(x), px(y), px(w), px(h));
+ 	} else {
+-		glScissor(x, gr_screen.max_h-y-h, w, h);
++		glScissor(px(x), px(gr_screen.max_h-y-h), px(w), px(h));
+ 	}
+ }
+ 
+diff --git a/code/graphics/opengl/gropengldraw.cpp b/code/graphics/opengl/gropengldraw.cpp
+index 4e5a039..a26c592 100644
+--- a/code/graphics/opengl/gropengldraw.cpp
++++ b/code/graphics/opengl/gropengldraw.cpp
+@@ -26,6 +26,7 @@
+ #include "graphics/paths/PathRenderer.h"
+ #include "graphics/util/uniform_structs.h"
+ #include "lighting/lighting.h"
++#include "osapi/osregistry.h"
+ #include "render/3d.h"
+ #include "tracing/tracing.h"
+ #ifdef USE_OPENGL_ES
+@@ -1233,6 +1234,138 @@ void gr_opengl_stop_decal_pass() {
+ 	glDrawBuffers(6, buffers2);
+ }
+ 
++// ---------------------------------------------------------------------------------------------------------------------
++// VR HUD render target.
++//
++// In VR the whole HUD is drawn into its own RGBA texture, exactly like it would be drawn onto the screen in a flat
++// game (same pixel layout, same drawing code, same gr_screen state), and that texture is then shown as a single
++// panel by gr_vr_hud_draw(). This is deliberately *not* done through bm_set_render_target(), which changes the
++// screen size / render-to-texture state that all the HUD gauges depend on.
++// ---------------------------------------------------------------------------------------------------------------------
++struct vr_target_t {
++	int bm = -1;
++	int w = 0;			// size of the texture in pixels
++	int h = 0;
++	int for_w = 0;		// the logical screen size the texture was created for
++	int for_h = 0;
++};
++
++static vr_target_t Vr_hud_tgt;		// the HUD itself (as big as the logical screen)
++static vr_target_t Vr_label_tgt;	// text labels for the VR target brackets (the bottom-left corner of the logical screen)
++
++// How many pixels the HUD texture has per logical screen pixel. The HUD is laid out and drawn in logical screen
++// coordinates; a larger texture just means every line, shape and (TrueType) letter is rendered with more pixels.
++// Can be changed with "VRHudResolutionScale=<factor>" in the [Default] section of fs2_open.ini. Read once.
++static float vr_hud_resolution_scale()
++{
++	static float scale = -1.0f;
++
++	if (scale < 0.0f) {
++		scale = 2.0f;
++
++		const char* configured = os_config_read_string("Default", "VRHudResolutionScale", nullptr);
++		if (configured != nullptr) {
++			const float value = static_cast<float>(atof(configured));
++			if (value >= 1.0f && value <= 4.0f)
++				scale = value;
++		}
++
++		mprintf(("VR HUD: texture resolution scale is %.2f\n", scale));
++	}
++
++	return scale;
++}
++
++// Starts drawing into one of the VR textures. 'logical_w/h' is the part of the logical screen the texture covers, starting
++// at the bottom-left corner (the HUD texture covers all of it). The viewport always maps the whole logical screen, so a
++// smaller texture simply shows that corner of it.
++static int vr_target_begin(vr_target_t& t, int logical_w, int logical_h)
++{
++	if (t.bm >= 0 && (t.for_w != gr_screen.max_w || t.for_h != gr_screen.max_h)) {
++		bm_release(t.bm, 1);
++		t.bm = -1;
++	}
++
++	if (t.bm < 0) {
++		const float wanted = vr_hud_resolution_scale();
++
++		// creating a render target leaves the default framebuffer bound afterwards, so protect the current state
++		GL_state.PushFramebufferState();
++		t.bm = bm_make_render_target(static_cast<int>(lroundf(logical_w * wanted)), static_cast<int>(lroundf(logical_h * wanted)),
++			BMP_FLAG_RENDER_TARGET_DYNAMIC | BMP_FLAG_RENDER_TARGET_DEPTH_ATTACHMENT);
++		GL_state.PopFramebufferState();
++
++		if (t.bm < 0)
++			return -1;
++
++		// the texture size can have been limited by the graphics card
++		bm_get_info(t.bm, &t.w, &t.h);
++		t.for_w = gr_screen.max_w;
++		t.for_h = gr_screen.max_h;
++	}
++
++	GLuint fbo = opengl_get_render_target_framebuffer(t.bm);
++	if (fbo == 0)
++		return -1;
++
++	GL_state.PushFramebufferState();
++	GL_state.BindFrameBuffer(fbo);
++
++	const float pass_scale = static_cast<float>(t.w) / static_cast<float>(logical_w);
++	glViewport(0, 0, static_cast<GLsizei>(lroundf(gr_screen.max_w * pass_scale)), static_cast<GLsizei>(lroundf(gr_screen.max_h * pass_scale)));
++
++	// start from a fully transparent texture
++	const GLboolean scissor = GL_state.ScissorTest(GL_FALSE);
++	GL_state.ColorMask(true, true, true, true);
++	GL_state.SetZbufferType(ZBUFFER_TYPE_FULL);
++	// the vector lines of the HUD (NanoVG) test against the stencil buffer, so it has to start out at zero as well
++	GL_state.StencilTest(GL_FALSE);
++	GL_state.StencilMask(0xFFFFFFFF);
++	glClearStencil(0);
++	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
++	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
++	GL_state.SetZbufferType(ZBUFFER_TYPE_NONE);
++	GL_state.ScissorTest(scissor);
++
++	GL_state.SetVrHudAlphaFix(true);
++	GL_vr_hud_framebuffer = fbo;
++	Gr_vr_hud_pass_scale = pass_scale;
++	Gr_vr_hud_scale = Gr_vr_hud_pass_scale;
++
++	return t.bm;
++}
++
++static void vr_target_end()
++{
++	Gr_vr_hud_scale = 1.0f;
++	Gr_vr_hud_pass_scale = 1.0f;
++	GL_vr_hud_framebuffer = 0;
++	GL_state.SetVrHudAlphaFix(false);
++	GL_state.PopFramebufferState();
++
++	glViewport(0, 0, gr_screen.max_w, gr_screen.max_h);
++}
++
++int gr_opengl_vr_hud_begin()
++{
++	return vr_target_begin(Vr_hud_tgt, gr_screen.max_w, gr_screen.max_h);
++}
++
++void gr_opengl_vr_hud_end()
++{
++	vr_target_end();
++}
++
++int gr_opengl_vr_label_begin(int logical_w, int logical_h)
++{
++	return vr_target_begin(Vr_label_tgt, logical_w, logical_h);
++}
++
++void gr_opengl_vr_label_end()
++{
++	vr_target_end();
++}
++
+ void gr_opengl_calculate_irrmap()
+ {
+ 
+diff --git a/code/graphics/opengl/gropengldraw.h b/code/graphics/opengl/gropengldraw.h
+index d60f857..1487658 100644
+--- a/code/graphics/opengl/gropengldraw.h
++++ b/code/graphics/opengl/gropengldraw.h
+@@ -151,6 +151,15 @@ void gr_opengl_stop_decal_pass();
+ 
+ void gr_opengl_calculate_irrmap();
+ 
++// VR: draw the HUD into its own texture. Begin returns the bitmap handle of that texture (or -1 if unavailable),
++// and every begin that succeeded must be paired with an end.
++int gr_opengl_vr_hud_begin();
++void gr_opengl_vr_hud_end();
++// Small second texture for the text labels of the VR target brackets; it covers the bottom-left corner (logical_w x logical_h)
++// of the logical screen. Same rules as the HUD texture.
++int gr_opengl_vr_label_begin(int logical_w, int logical_h);
++void gr_opengl_vr_label_end();
++
+ extern int Scene_texture_initialized;
+ 
+ extern GLuint Scene_color_texture;
+diff --git a/code/graphics/opengl/gropenglstate.cpp b/code/graphics/opengl/gropenglstate.cpp
+index 3eda54f..58c163b 100644
+--- a/code/graphics/opengl/gropenglstate.cpp
++++ b/code/graphics/opengl/gropenglstate.cpp
+@@ -21,6 +21,9 @@ extern GLfloat GL_max_anisotropy;
+ 
+ opengl_state GL_state;
+ 
++float Gr_vr_hud_scale = 1.0f;
++float Gr_vr_hud_pass_scale = 1.0f;
++
+ 
+ opengl_texture_state::~opengl_texture_state()
+ {
+@@ -409,7 +412,11 @@ bvec4 opengl_state::ColorMask(bool red, bool green, bool blue, bool alpha)
+ void opengl_state::BlendFunc(GLenum s_val, GLenum d_val)
+ {
+ 	if (s_val != blendfunc_Value.first || d_val != blendfunc_Value.second) {
+-		glBlendFunc(s_val, d_val);
++		if (vr_hud_alpha_fix) {
++			glBlendFuncSeparate(s_val, d_val, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
++		} else {
++			glBlendFunc(s_val, d_val);
++		}
+ 		blendfunc_Value.first = s_val;
+ 		blendfunc_Value.second = d_val;
+ 
+@@ -437,6 +444,15 @@ void opengl_state::BlendFunci(int buffer, GLenum s_val, GLenum d_val) {
+ 	blendfunc_Value.second = GL_INVALID_ENUM;
+ }
+ 
++void opengl_state::SetVrHudAlphaFix(bool enable)
++{
++	vr_hud_alpha_fix = enable;
++
++	// Force the next BlendFunc call to actually issue the GL call with the new alpha handling.
++	blendfunc_Value.first = GL_INVALID_ENUM;
++	blendfunc_Value.second = GL_INVALID_ENUM;
++}
++
+ void opengl_state::SetAlphaBlendMode(gr_alpha_blend ab)
+ {
+ 	switch (ab) {
+@@ -535,6 +551,9 @@ void opengl_state::SetZbufferType(gr_zbuffer_type zt)
+ 
+ void opengl_state::SetLineWidth(GLfloat width)
+ {
++	// the cached value is the width actually given to OpenGL, in render target pixels
++	width *= Gr_vr_hud_scale;
++
+ 	if ( width == line_width_Value ) {
+ 		return;
+ 	}
+diff --git a/code/graphics/opengl/gropenglstate.h b/code/graphics/opengl/gropenglstate.h
+index 7a98a58..ddd14ff 100644
+--- a/code/graphics/opengl/gropenglstate.h
++++ b/code/graphics/opengl/gropenglstate.h
+@@ -29,6 +29,16 @@ struct opengl_texture_unit {
+ 	GLuint texture_id;
+ };
+ 
++// Pixel scale of the render target the VR HUD is currently being drawn into, relative to the logical screen size.
++// 1 whenever the HUD is not being drawn into its (supersampled) VR texture. Everything that talks to OpenGL in pixels
++// (viewport, scissor, line width, NanoVG) multiplies by this; everything else keeps working in logical coordinates.
++extern float Gr_vr_hud_scale;
++
++// The scale the VR HUD texture is drawn with while the HUD pass is running. Gr_vr_hud_scale only equals this while the
++// HUD texture itself is the render target; other render targets used in the middle of the HUD pass (cockpit
++// displays) are drawn at their own, normal scale.
++extern float Gr_vr_hud_pass_scale;
++
+ class opengl_texture_state
+ {
+ 	private:
+@@ -214,6 +224,7 @@ class opengl_state
+ 		GLenum frontface_Value;
+ 		GLenum cullface_Value;
+ 		std::pair<GLenum, GLenum> blendfunc_Value;
++		bool vr_hud_alpha_fix = false;
+ 		std::array<std::pair<GLenum, GLenum>, material::NUM_BUFFER_BLENDS> buffer_blendfunc_Value;
+ 		GLenum depthfunc_Value;
+ 
+@@ -258,6 +269,9 @@ class opengl_state
+ 
+ 		void SetAlphaBlendMode(gr_alpha_blend ab);
+ 		void SetAlphaBlendModei(int buffer, gr_alpha_blend ab);
++		// While enabled, blending accumulates the alpha channel as a proper "over" operation. Needed when drawing
++		// into an RGBA target that is composited later (the VR HUD texture).
++		void SetVrHudAlphaFix(bool enable);
+ 		void SetZbufferType(gr_zbuffer_type zt);
+ 		void SetPolygonOffset(GLfloat factor, GLfloat units);
+ 		void SetPolygonMode(GLenum face, GLenum mode);
+diff --git a/code/graphics/opengl/gropengltexture.cpp b/code/graphics/opengl/gropengltexture.cpp
+index b31c549..a32dd57 100644
+--- a/code/graphics/opengl/gropengltexture.cpp
++++ b/code/graphics/opengl/gropengltexture.cpp
+@@ -1646,6 +1646,10 @@ struct fbo_t {
+ 
+ static SCP_vector<fbo_t> RenderTarget;
+ static fbo_t *render_target = NULL;
++
++// Non-zero while the VR HUD is being drawn into its own texture (see gr_opengl_vr_hud_begin()). Other render-to-texture
++// work that happens in the middle of that (cockpit displays) has to return to this framebuffer, not the screen.
++GLuint GL_vr_hud_framebuffer = 0;
+ static int next_fbo_id = 0;
+ 
+ static fbo_t* opengl_get_fbo(int id) {
+@@ -1806,7 +1810,14 @@ int opengl_set_render_target( int slot, int face, int is_static )
+ 			}
+ 		}
+ 
+-		if(Cmdline_window_res) {
++		if (GL_vr_hud_framebuffer != 0) {
++			// The VR HUD is being drawn into its own texture; "back to the screen" means back to that texture,
++			// and back to its pixel scale.
++			GL_state.BindFrameBuffer(GL_vr_hud_framebuffer);
++			Gr_vr_hud_scale = Gr_vr_hud_pass_scale;
++			GL_state.SetVrHudAlphaFix(true);
++		}
++		else if(Cmdline_window_res) {
+ 			GL_state.BindFrameBuffer(Back_framebuffer);
+ 		}
+ 		else {
+@@ -1846,6 +1857,13 @@ int opengl_set_render_target( int slot, int face, int is_static )
+ 		return 0;
+ 	}
+ 
++	// A normal render target (cockpit display, ...) used in the middle of the VR HUD pass is drawn exactly as it
++	// always was: no HUD texture pixel scale, no special alpha handling.
++	if (GL_vr_hud_framebuffer != 0) {
++		Gr_vr_hud_scale = 1.0f;
++		GL_state.SetVrHudAlphaFix(false);
++	}
++
+ //	glBindRenderbuffer(GL_RENDERBUFFER, fbo->renderbuffer_id);
+ 	GL_state.BindFrameBuffer(fbo->framebuffer_id);
+ 
+@@ -2049,6 +2067,24 @@ GLuint opengl_get_rtt_framebuffer()
+ 		return render_target->framebuffer_id;
+ }
+ 
++// Returns the OpenGL framebuffer object that renders into the given render target bitmap, or 0 if there is none.
++// Unlike opengl_set_render_target() this does not touch any other rendering state.
++GLuint opengl_get_render_target_framebuffer(int handle)
++{
++	if (handle < 0)
++		return 0;
++
++	auto ts = bm_get_gr_info<tcache_slot_opengl>(handle);
++	if (ts == nullptr)
++		return 0;
++
++	auto fbo = opengl_get_fbo(ts->fbo_id);
++	if (fbo == nullptr)
++		return 0;
++
++	return fbo->framebuffer_id;
++}
++
+ void gr_opengl_bm_generate_mip_maps(int handle)
+ {
+ 	tcache_slot_opengl *ts = NULL;
+diff --git a/code/graphics/opengl/gropengltexture.h b/code/graphics/opengl/gropengltexture.h
+index e8933fd..cfafa36 100644
+--- a/code/graphics/opengl/gropengltexture.h
++++ b/code/graphics/opengl/gropengltexture.h
+@@ -94,6 +94,8 @@ int gr_opengl_preload(int bitmap_num, int is_aabitmap);
+ void gr_opengl_set_texture_panning(float u, float v, bool enable);
+ void gr_opengl_set_texture_addressing(int mode);
+ GLuint opengl_get_rtt_framebuffer();
++GLuint opengl_get_render_target_framebuffer(int handle);
++extern GLuint GL_vr_hud_framebuffer;
+ void gr_opengl_bm_generate_mip_maps(int slot);
+ void gr_opengl_get_texture_scale(int bitmap_handle, float *u_scale, float *v_scale);
+ 
+diff --git a/code/graphics/opengl/gropengltnl.cpp b/code/graphics/opengl/gropengltnl.cpp
+index 9ed9f6d..a6174ca 100644
+--- a/code/graphics/opengl/gropengltnl.cpp
++++ b/code/graphics/opengl/gropengltnl.cpp
+@@ -728,8 +728,11 @@ void gr_opengl_shadow_map_end()
+ 	Glowpoint_override = Glowpoint_override_save;
+ 	gr_htl_projection_matrix_set = false;
+ 
+-	glViewport(gr_screen.offset_x, (gr_screen.max_h - gr_screen.offset_y - gr_screen.clip_height), gr_screen.clip_width, gr_screen.clip_height);
+-	glScissor(gr_screen.offset_x, (gr_screen.max_h - gr_screen.offset_y - gr_screen.clip_height), gr_screen.clip_width, gr_screen.clip_height);
++	const float vr_scale = Gr_vr_hud_scale;
++	auto px = [vr_scale](int v) { return static_cast<GLint>(lroundf(v * vr_scale)); };
++
++	glViewport(px(gr_screen.offset_x), px(gr_screen.max_h - gr_screen.offset_y - gr_screen.clip_height), px(gr_screen.clip_width), px(gr_screen.clip_height));
++	glScissor(px(gr_screen.offset_x), px(gr_screen.max_h - gr_screen.offset_y - gr_screen.clip_height), px(gr_screen.clip_width), px(gr_screen.clip_height));
+ }
+ 
+ void opengl_tnl_set_material(material* material_info, bool set_base_map, bool set_clipping)
+@@ -1176,7 +1179,10 @@ void opengl_tnl_set_rocketui_material(interface_material* material_info)
+ }
+ 
+ void gr_opengl_set_viewport(int x, int y, int width, int height) {
+-	glViewport(x, y, width, height);
++	// the VR HUD texture can have more pixels than the logical screen
++	const float scale = Gr_vr_hud_scale;
++	glViewport(static_cast<GLint>(lroundf(x * scale)), static_cast<GLint>(lroundf(y * scale)),
++		static_cast<GLsizei>(lroundf(width * scale)), static_cast<GLsizei>(lroundf(height * scale)));
+ }
+ 
+ void opengl_bind_vertex_component(const vertex_format_data &vert_component, size_t base_offset)
+diff --git a/code/graphics/paths/PathRenderer.cpp b/code/graphics/paths/PathRenderer.cpp
+index 9524aff..4342b69 100644
+--- a/code/graphics/paths/PathRenderer.cpp
++++ b/code/graphics/paths/PathRenderer.cpp
+@@ -1,5 +1,8 @@
+ #include "graphics/paths/PathRenderer.h"
+ 
++// defined in graphics/opengl/gropenglstate.cpp
++extern float Gr_vr_hud_scale;
++
+ #include "graphics/paths/NanoVGRenderer.h"
+ 
+ namespace {
+@@ -39,7 +42,9 @@ void PathRenderer::beginFrame() {
+ 	Assertion(!m_inFrame,
+ 			  "beginFrame() was called withoug ending previous frame! Check your path renderer calls or get a coder!");
+ 
+-	nvgBeginFrame(m_context, gr_screen.max_w, gr_screen.max_h, 1.0f);
++	// While the VR HUD is drawn into its supersampled texture the logical size stays the same, but text and edges
++	// need to be rendered with proportionally more pixels.
++	nvgBeginFrame(m_context, gr_screen.max_w, gr_screen.max_h, Gr_vr_hud_scale);
+ 	m_inFrame = true;
+ }
+ 
+diff --git a/code/hud/hud.cpp b/code/hud/hud.cpp
+index 0c9d31a..0265096 100644
+--- a/code/hud/hud.cpp
++++ b/code/hud/hud.cpp
+@@ -4162,7 +4162,7 @@ void HUD_get_nose_coordinates(int *x, int *y)
+ 
+ 	*x = 0;
+ 	*y = 0;
+-	
++
+ 	vm_vec_scale_add(&p0, &Player_obj->pos, &Player_obj->orient.vec.fvec, 1000.0f);
+ 	g3_rotate_vertex(&v0, &p0);
+ 
+@@ -4217,6 +4217,11 @@ void HUD_set_clip(int x, int y, int w, int h)
+  * @brief Called to save and restore the 3D camera settings.
+  * @param save Save global view variables if 1, restore them if not 1 
+  */
++// The scaling that was baked into View_matrix (and the asymmetric-FOV shear that goes with it) must be saved and
++// restored together with View_matrix, or projecting after a closeup render (target box, shield, etc.) is wrong in VR.
++extern vec3d Matrix_scale;
++extern float Asym_shear_x, Asym_shear_y;
++
+ void hud_save_restore_camera_data(int save)
+ {
+ 	static vec3d	save_view_position;
+@@ -4225,6 +4230,9 @@ void hud_save_restore_camera_data(int save)
+ 	static matrix	save_view_matrix;
+ 	static matrix	save_eye_matrix;
+ 	static vec3d	save_eye_position;
++	static vec3d	save_matrix_scale;
++	static float	save_asym_shear_x = 0.0f;
++	static float	save_asym_shear_y = 0.0f;
+ 
+ 	if ( save ) {
+ 		save_view_position		= View_position;
+@@ -4233,6 +4241,9 @@ void hud_save_restore_camera_data(int save)
+ 		save_view_matrix		= View_matrix;
+ 		save_eye_matrix			= Eye_matrix;
+ 		save_eye_position		= Eye_position;
++		save_matrix_scale		= Matrix_scale;
++		save_asym_shear_x		= Asym_shear_x;
++		save_asym_shear_y		= Asym_shear_y;
+ 	}
+ 	else {
+ 		// restore global view variables
+@@ -4242,6 +4253,9 @@ void hud_save_restore_camera_data(int save)
+ 		View_matrix		= save_view_matrix;
+ 		Eye_matrix		= save_eye_matrix;
+ 		Eye_position	= save_eye_position;
++		Matrix_scale	= save_matrix_scale;
++		Asym_shear_x	= save_asym_shear_x;
++		Asym_shear_y	= save_asym_shear_y;
+ 	}
+ }
+ 
+diff --git a/code/hud/hudbrackets.cpp b/code/hud/hudbrackets.cpp
+index 0337ad4..74cd896 100644
+--- a/code/hud/hudbrackets.cpp
++++ b/code/hud/hudbrackets.cpp
+@@ -12,6 +12,7 @@
+ #include "asteroid/asteroid.h"
+ #include "cmdline/cmdline.h"
+ #include "debris/debris.h"
++#include "graphics/matrix.h"
+ #include "hud/hudbrackets.h"
+ #include "hud/hudtarget.h"
+ #include "iff_defs/iff_defs.h"
+@@ -355,6 +356,136 @@ void HudGaugeBrackets::initBitmaps(char *fname)
+ 	}
+ }
+ 
++
++// VR: the target frame is not drawn into the HUD texture. It is queued, and drawn for each eye at the direction of the
++// target (see vr_overlay_bracket in graphics/matrix.h).
++static void hud_queue_vr_bracket(object* targetp, int font_num, int flags, float distance)
++{
++	vr_overlay_bracket b;
++
++	int modelnum = -1;
++	int submodel_num = -1;
++
++	switch (targetp->type) {
++	case OBJ_SHIP:
++		modelnum = Ship_info[Ships[targetp->instance].ship_info_index].model_num;
++		break;
++	case OBJ_DEBRIS:
++		modelnum = Debris[targetp->instance].model_num;
++		submodel_num = Debris[targetp->instance].submodel_num;
++		break;
++	case OBJ_WEAPON:
++		modelnum = Weapon_info[Weapons[targetp->instance].weapon_info_index].model_num;
++		break;
++	case OBJ_ASTEROID: {
++		int pof = Asteroids[targetp->instance].asteroid_subtype;
++		modelnum = Asteroid_info[Asteroids[targetp->instance].asteroid_type].subtypes[pof].model_number;
++		break;
++	}
++	case OBJ_JUMP_NODE: {
++		auto jnp = jumpnode_get_by_objp(targetp);
++		modelnum = jnp ? jnp->GetModelNumber() : -1;
++		break;
++	}
++	default:
++		return;
++	}
++
++	// bounding box of the target (a small cube if it has no model)
++	vec3d mn = { { { -1.0f, -1.0f, -1.0f } } };
++	vec3d mx = { { { 1.0f, 1.0f, 1.0f } } };
++
++	if (modelnum >= 0) {
++		polymodel* pm = model_get(modelnum);
++		if (pm != nullptr) {
++			if (submodel_num >= 0 && submodel_num < pm->n_models) {
++				mn = pm->submodel[submodel_num].min;
++				mx = pm->submodel[submodel_num].max;
++			} else {
++				mn = pm->mins;
++				mx = pm->maxs;
++			}
++		}
++	}
++
++	for (int i = 0; i < 8; i++) {
++		vec3d local;
++		local.xyz.x = (i & 1) ? mx.xyz.x : mn.xyz.x;
++		local.xyz.y = (i & 2) ? mx.xyz.y : mn.xyz.y;
++		local.xyz.z = (i & 4) ? mx.xyz.z : mn.xyz.z;
++
++		vm_vec_unrotate(&b.corners[i], &local, &targetp->orient);
++		vm_vec_add2(&b.corners[i], &targetp->pos);
++	}
++
++	b.pos = targetp->pos;
++	b.clr = gr_screen.current_color;
++	b.objnum = OBJ_INDEX(targetp);
++	b.font_num = font_num;
++
++	if (flags & TARGET_DISPLAY_DIST) {
++		char text_dist[64];
++		sprintf(text_dist, "%d", static_cast<int>(std::lround(distance * Hud_unit_multiplier)));
++		b.dist = text_dist;
++	}
++
++	if (flags & (TARGET_DISPLAY_NAME | TARGET_DISPLAY_CLASS)) {
++		const char* tinfo_name = nullptr;
++		const char* tinfo_class = nullptr;
++		char temp_name[NAME_LENGTH*2+3];
++		char temp_class[NAME_LENGTH];
++
++		switch (targetp->type) {
++		case OBJ_SHIP:
++			hud_stuff_ship_name(temp_name, &Ships[targetp->instance]);
++			hud_stuff_ship_class(temp_class, &Ships[targetp->instance]);
++			tinfo_name = temp_name;
++			tinfo_class = temp_class;
++
++			// maybe concatenate the callsign
++			if (*temp_name) {
++				char temp_callsign[NAME_LENGTH];
++
++				hud_stuff_ship_callsign(temp_callsign, &Ships[targetp->instance]);
++				if (*temp_callsign)
++					sprintf(&temp_name[strlen(temp_name)], " (%s)", temp_callsign);
++			} else { // maybe substitute the callsign
++				hud_stuff_ship_callsign(temp_name, &Ships[targetp->instance]);
++			}
++			break;
++		case OBJ_DEBRIS:
++			tinfo_name = XSTR("debris", 348);
++			break;
++		case OBJ_WEAPON:
++			tinfo_name = Weapon_info[Weapons[targetp->instance].weapon_info_index].get_display_name();
++			break;
++		case OBJ_ASTEROID:
++			switch (Asteroids[targetp->instance].asteroid_type) {
++			case ASTEROID_TYPE_SMALL:
++			case ASTEROID_TYPE_MEDIUM:
++			case ASTEROID_TYPE_LARGE:
++				tinfo_name = XSTR("asteroid", 431);
++				break;
++			default:
++				tinfo_name = XSTR("debris", 348);
++			}
++			break;
++		case OBJ_JUMP_NODE: {
++			auto jnp = jumpnode_get_by_objnum(OBJ_INDEX(targetp));
++			tinfo_name = jnp ? jnp->GetDisplayName() : "";
++			break;
++		}
++		}
++
++		if (tinfo_name && (flags & TARGET_DISPLAY_NAME))
++			b.name = tinfo_name;
++		if (tinfo_class && (flags & TARGET_DISPLAY_CLASS))
++			b.cls = tinfo_class;
++	}
++
++	vr_overlay_add(std::move(b));
++}
++
+ void HudGaugeBrackets::render(float  /*frametime*/, bool config)
+ {
+ 	// Brackets are do not support config settings
+@@ -385,6 +516,21 @@ void HudGaugeBrackets::render(float  /*frametime*/, bool config)
+ 		}
+ 	}
+ 
++	// VR: the player's target gets a frame wherever it is, not only when it is in front of the virtual HUD camera
++	if (vr_overlay_brackets_active() && Player_ai->target_objnum >= 0 && Player->target_is_dying <= 0) {
++		object* targetp = &Objects[Player_ai->target_objnum];
++
++		if (targetp->type == OBJ_SHIP || targetp->type == OBJ_DEBRIS || targetp->type == OBJ_WEAPON ||
++			targetp->type == OBJ_ASTEROID || targetp->type == OBJ_JUMP_NODE) {
++			int flags = TARGET_DISPLAY_DIST;
++			if (Extra_target_info)
++				flags |= TARGET_DISPLAY_NAME | TARGET_DISPLAY_CLASS;
++
++			hud_set_iff_color(targetp, 1);
++			hud_queue_vr_bracket(targetp, font_num, flags, Player_ai->current_target_distance);
++		}
++	}
++
+ 	line_draw_list.flush();
+ 
+ 	if(!in_frame)
+@@ -477,7 +623,10 @@ void HudGaugeBrackets::renderObjectBrackets(object *targetp, color *clr, int w_c
+ 			hud_set_iff_color(targetp, 1);
+ 		}
+ 
+-		if ( draw_box ) {
++		// VR: the frame is drawn by the per-eye bracket overlay, whether or not it fits on the HUD texture
++		const bool vr_brackets = vr_overlay_brackets_active();
++
++		if ( draw_box || vr_brackets ) {
+ 			float distance = 0.0f; // init to 0 if we don't have to display distance
+ 			int target_objnum = -1;
+ 
+@@ -495,7 +644,11 @@ void HudGaugeBrackets::renderObjectBrackets(object *targetp, color *clr, int w_c
+ 				target_objnum = OBJ_INDEX(targetp);
+ 			}
+ 
+-			renderBoundingBrackets(x1-5, y1-5, x2+5, y2+5, w_correction, h_correction, distance, target_objnum, flags);
++			if (vr_brackets) {
++				hud_queue_vr_bracket(targetp, font_num, flags, distance);
++			} else {
++				renderBoundingBrackets(x1-5, y1-5, x2+5, y2+5, w_correction, h_correction, distance, target_objnum, flags);
++			}
+ 		}
+ 
+ 		if ( (targetp->type == OBJ_SHIP) && (flags & TARGET_DISPLAY_SUBSYS) ) {
+diff --git a/code/hud/hudparse.cpp b/code/hud/hudparse.cpp
+index feac0f4..36bc1f8 100644
+--- a/code/hud/hudparse.cpp
++++ b/code/hud/hudparse.cpp
+@@ -29,6 +29,7 @@
+ #include "localization/localize.h"
+ #include "mission/missionmessage.h"
+ #include "mission/missiontraining.h"
++#include "osapi/osregistry.h"
+ #include "parse/parselo.h"
+ #include "radar/radar.h"
+ #include "radar/radardradis.h"
+@@ -1407,17 +1408,44 @@ void adjust_base_res(int *base_res, const int *force_scaling_above_res, float *a
+ 	}
+ }
+ 
++// In VR the HUD is drawn smaller than the screen (Hud_global_scale, 0.5 by default) so that it fits comfortably into the
++// view. "VRHudScale=<factor>" in the [Default] section of fs2_open.ini overrides that: larger numbers make the whole HUD
++// (layout, graphics and text) bigger. Read once; only used when VR is on, which is when Hud_global_scale is not 1.
++static float hud_get_global_scale()
++{
++	static float scale = -1.0f;
++
++	if (scale < 0.0f) {
++		scale = Hud_global_scale;
++
++		if (Hud_global_scale != 1.0f) {
++			const char* configured = os_config_read_string("Default", "VRHudScale", nullptr);
++			if (configured != nullptr) {
++				const float value = static_cast<float>(atof(configured));
++				if (value >= 0.2f && value <= 1.5f)
++					scale = value;
++			}
++
++			mprintf(("VR HUD: HUD scale is %.2f\n", scale));
++		}
++	}
++
++	return scale;
++}
++
+ void adjust_for_multimonitor(int *base_res, bool set_position, int *coords)
+ {
++	const float hud_scale = hud_get_global_scale();
++
+ 	float scale_w = (float)gr_screen.center_w / (float)base_res[0];
+ 	float scale_h = (float)gr_screen.center_h / (float)base_res[1];
+ 
+-	base_res[0] = fl2ir(base_res[0] * ((float)gr_screen.max_w / (float)gr_screen.center_w / Hud_global_scale));
+-	base_res[1] = fl2ir(base_res[1] * ((float)gr_screen.max_h / (float)gr_screen.center_h / Hud_global_scale));
++	base_res[0] = fl2ir(base_res[0] * ((float)gr_screen.max_w / (float)gr_screen.center_w / hud_scale));
++	base_res[1] = fl2ir(base_res[1] * ((float)gr_screen.max_h / (float)gr_screen.center_h / hud_scale));
+ 
+ 	if (set_position) {
+-		coords[0] += fl2ir(gr_screen.center_offset_x / scale_w + ((1.0f - Hud_global_scale) * 0.5f * (float)base_res[0]));
+-		coords[1] += fl2ir(gr_screen.center_offset_y / scale_h + ((1.0f - Hud_global_scale) * 0.5f * (float)base_res[1]));
++		coords[0] += fl2ir(gr_screen.center_offset_x / scale_w + ((1.0f - hud_scale) * 0.5f * (float)base_res[0]));
++		coords[1] += fl2ir(gr_screen.center_offset_y / scale_h + ((1.0f - hud_scale) * 0.5f * (float)base_res[1]));
+ 	}
+ }
+ 
+diff --git a/code/render/3d.h b/code/render/3d.h
+index f0fafe8..1430249 100644
+--- a/code/render/3d.h
++++ b/code/render/3d.h
+@@ -67,7 +67,7 @@ float g3_get_hfov(const fov_t& fov, bool visible_fov = true);
+ /**
+  * Set view from camera
+  */
+-void g3_set_view(camera *cam);
++void g3_set_view(camera *cam, const fov_t* fov_override = nullptr);
+ 
+ /**
+  * Set view from x,y,z, viewer matrix, and zoom.  Must call one of g3_set_view_*()
+diff --git a/code/render/3dinternal.h b/code/render/3dinternal.h
+index 766cf08..46a354a 100644
+--- a/code/render/3dinternal.h
++++ b/code/render/3dinternal.h
+@@ -22,6 +22,7 @@ extern int free_point_num;
+ 
+ extern fov_t View_zoom;
+ extern vec3d View_position,Matrix_scale;
++extern float Asym_shear_x, Asym_shear_y;
+ extern matrix View_matrix,Unscaled_matrix;
+ 
+ extern void free_temp_point(vertex *p);
+diff --git a/code/render/3dmath.cpp b/code/render/3dmath.cpp
+index 9ed8a6b..6f7d453 100644
+--- a/code/render/3dmath.cpp
++++ b/code/render/3dmath.cpp
+@@ -91,15 +91,12 @@ ubyte g3_transfer_vertex(vertex *dest, const vec3d *src)
+ 	return 0;
+ }
+ 
++// For an asymmetric (VR) FOV, x and y arrive here already multiplied by Matrix_scale (see scale_matrix()), which maps
++// the frustum's extent to a width of 2. All that is left is to shift the frustum center back to the middle of the
++// canvas. This is an exact (linear) match for the projection matrix; the shear is 0 for a symmetric FOV.
+ static void g3_compensate_asymmetric_fov(float& x, float& y, float z) {
+-	if (std::holds_alternative<asymmetric_fov>(Proj_fov)) {
+-		const auto& afov = std::get<asymmetric_fov>(Proj_fov);
+-		float angle = atan2_safe(z, x) + (afov.left + afov.right);
+-		x = angle == PI_2 ? 0.0f : z / tanf(angle);
+-
+-		angle = atan2_safe(z, y) + (afov.up + afov.down);
+-		y = angle == PI_2 ? 0.0f : z / tanf(angle);
+-	}
++	x -= Asym_shear_x * z;
++	y -= Asym_shear_y * z;
+ }
+ 
+ static inline void g3_compensate_asymmetric_fov(vec3d& rotated) {
+diff --git a/code/render/3dsetup.cpp b/code/render/3dsetup.cpp
+index b0f6da7..bb9c9a9 100644
+--- a/code/render/3dsetup.cpp
++++ b/code/render/3dsetup.cpp
+@@ -33,6 +33,8 @@ fov_t			Proj_fov = 0.0f;// The fov (for HTL projection matrix)
+ 
+ vec3d		Window_scale;		// Scaling for window aspect
+ vec3d		Matrix_scale;		// How the matrix is scaled, window_scale * zoom
++float		Asym_shear_x = 0.0f;	// Frustum-center shear for asymmetric (VR) FOVs, in units of z. 0 for a symmetric FOV.
++float		Asym_shear_y = 0.0f;
+ 
+ int			Canvas_width;		// The actual width
+ int			Canvas_height;		// The actual height
+@@ -139,13 +141,18 @@ float g3_get_hfov(const fov_t& fov, bool visible_fov) {
+ 	}
+ }
+ 
+-void g3_set_view(camera *cam)
++void g3_set_view(camera *cam, const fov_t* fov_override)
+ {
+ 	vec3d pos;
+ 	matrix ori;
+ 	cam->get_info(&pos, &ori);
+ 
+-	if(Sexp_fov <= 0.0f)
++	// An override (i.e. the per-eye FOV in VR) must go through g3_set_view_matrix() so that the matrix scaling
++	// is computed from it too. Calling g3_set_fov() afterwards only changes Proj_fov and leaves the matrix scaled
++	// for the camera's own FOV.
++	if (fov_override != nullptr)
++		g3_set_view_matrix(&pos, &ori, *fov_override);
++	else if(Sexp_fov <= 0.0f)
+ 		g3_set_view_matrix(&pos, &ori, cam->get_fov());
+ 	else
+ 		g3_set_view_matrix(&pos, &ori, Sexp_fov);
+@@ -190,10 +197,35 @@ void scale_matrix(void)
+ 
+ 	Matrix_scale = Window_scale;
+ 
+-	float s = 1.0f / tanf(g3_get_hfov(Proj_fov) * 0.5f);
++	if (std::holds_alternative<asymmetric_fov>(Proj_fov)) {
++		// Asymmetric (VR) frustum. This must reproduce *exactly* the off-axis projection that
++		// gr_set_proj_matrix() builds from the same angles, otherwise anything placed on screen via
++		// g3_project_vertex() (target brackets, lead indicator, slewed reticle, scripted HUD) drifts away
++		// from the rendered world as the head turns, and in a headset that shows up as the HUD "swimming".
++		//
++		// The frustum covers tan(left)..tan(right) horizontally and tan(down)..tan(up) vertically. Map that
++		// range to [-1, 1] with a per-axis scale plus a shear (the offset of the frustum center, in units of z).
++		// The aspect ratio is already encoded in the frustum extents, so Window_scale is not applied here.
++		const auto& afov = std::get<asymmetric_fov>(Proj_fov);
++		const float tl = tanf(afov.left);
++		const float tr = tanf(afov.right);
++		const float tu = tanf(afov.up);
++		const float td = tanf(afov.down);
++
++		Matrix_scale.xyz.x = 2.0f / (tr - tl);
++		Matrix_scale.xyz.y = 2.0f / (tu - td);
++
++		Asym_shear_x = (tr + tl) / (tr - tl);
++		Asym_shear_y = (tu + td) / (tu - td);
++	} else {
++		float s = 1.0f / tanf(g3_get_hfov(Proj_fov) * 0.5f);
++
++		Matrix_scale.xyz.x *= s;
++		Matrix_scale.xyz.y *= s;
+ 
+-	Matrix_scale.xyz.x *= s;
+-	Matrix_scale.xyz.y *= s;
++		Asym_shear_x = 0.0f;
++		Asym_shear_y = 0.0f;
++	}
+ 
+ 	//now scale matrix elements
+ 
+diff --git a/freespace2/freespace.cpp b/freespace2/freespace.cpp
+index 94590c3..c0718fd 100644
+--- a/freespace2/freespace.cpp
++++ b/freespace2/freespace.cpp
+@@ -67,6 +67,7 @@
+ #include "graphics/light.h"
+ #include "graphics/matrix.h"
+ #include "graphics/openxr.h"
++#include "graphics/software/font.h"
+ #include "graphics/shadows.h"
+ #include "headtracking/headtracking.h"
+ #include "hud/hud.h"
+@@ -836,6 +837,9 @@ static void set_dead_view_letterbox_clip()
+ 	gr_set_clip(0, yborder, gr_screen.max_w, gr_screen.max_h - yborder*2, GR_RESIZE_NONE);
+ }
+ 
++static bool Vr_hud_active = false;		// VR: the HUD is currently being drawn into the VR HUD texture
++static void game_flash_draw();
++
+ /**
+  * Call once a frame to diminish the flash effect to 0.
+  * @param frametime Period over which to dimish at ::DIMINISH_RATE
+@@ -893,7 +897,17 @@ static void game_flash_diminish(float frametime)
+ 	} else {
+ 		Big_expl_flash.cur_flash_intensity = 0.0f;
+ 	}
+-	
++
++	// VR: the HUD is drawn into its own texture, and the flash covers the whole view, so it must not be drawn there
++	// (it would turn the entire HUD panel into one opaque grey/red rectangle). It is drawn per eye after the panel.
++	if (!Vr_hud_active) {
++		game_flash_draw();
++	}
++}
++
++// draws the full-screen flash (damage, sun glare, big explosions) on top of what has been rendered so far
++static void game_flash_draw()
++{
+ 	if ( Use_palette_flash )	{
+ 		int r,g,b;
+ 
+@@ -3554,6 +3568,142 @@ void clip_frame_view();
+ // Does everything needed to render a frame
+ extern SCP_vector<object*> effect_ships;
+ extern SCP_vector<object*> transparent_objects;
++// ---------------------------------------------------------------------------------------------------------------------
++// VR HUD.
++//
++// In VR the HUD is not drawn on top of each eye's image. It is drawn once per eye pass into its own texture, from a
++// "virtual HUD camera" that sits where the ship's camera is and looks along the ship's axes, ignoring the head. That
++// is the view the HUD was designed for, so every gauge, bracket and script ends up exactly where it would be in a
++// flat game. The texture is then shown as one panel that is fixed to the ship (see gr_vr_hud_draw()), so head
++// movement behaves the same for the HUD as for the cockpit.
++// ---------------------------------------------------------------------------------------------------------------------
++extern int gr_opengl_vr_hud_begin();
++extern void gr_opengl_vr_hud_end();
++extern vec3d Matrix_scale;
++
++static bool Vr_hud_pose_valid = false;	// camera poses below were recorded for the current eye pass
++static vec3d Vr_hud_base_pos;			// camera position without the head offset
++static matrix Vr_hud_base_orient;		// camera orientation without the head rotation (= the ship's)
++static vec3d Vr_hud_eye_pos;			// the eye's position and orientation, head included
++static matrix Vr_hud_eye_orient;
++
++// (Vr_hud_active is declared near game_flash_diminish(), above)
++
++// The HUD texture is drawn for the first eye of a frame and shown again for the second; this is what the second eye needs.
++static bool Vr_hud_rendered_this_frame = false;
++static int Vr_hud_cached_texture = -1;
++static vec3d Vr_hud_cached_pos;
++static matrix Vr_hud_cached_orient;
++static float Vr_hud_cached_scale_x = 1.0f;
++static float Vr_hud_cached_scale_y = 1.0f;
++static float Vr_hud_scale_x = 1.0f;		// how the virtual HUD camera maps onto the HUD texture
++static float Vr_hud_scale_y = 1.0f;
++
++// How far in front of the pilot the HUD panel hangs, in meters. The panel always covers the same angle of the view,
++// so this only changes how far away it looks (its stereo depth), not its size. The default is far enough to be
++// effectively "at infinity", like the collimated HUD of a real fighter: the brackets then stay exactly on their targets
++// whatever the head does. Can be changed with "VRHudDistance=<meters>" in the [Default] section of fs2_open.ini.
++// Read once.
++// VR target brackets: the frames are drawn per eye from a queue (see graphics/matrix.h). Their name text is rendered
++// once per frame into a small label texture, one slot per bracket. Returns the texture, or -1 if there is no text.
++extern int gr_opengl_vr_label_begin(int logical_w, int logical_h);
++extern void gr_opengl_vr_label_end();
++static int Vr_hud_cached_label = -1;
++
++static int vr_hud_render_labels()
++{
++	auto& queue = vr_overlay_queue();
++
++	bool any_text = false;
++	for (const auto& e : queue)
++		any_text = any_text || !e.name.empty() || !e.cls.empty() || !e.dist.empty();
++
++	if (!any_text)
++		return -1;
++
++	const int texture = gr_opengl_vr_label_begin(VR_LABEL_W, VR_LABEL_H);
++	if (texture < 0)
++		return -1;
++
++	const int previous_font = font::get_current_fontnum();
++
++	gr_reset_clip();
++	gr_reset_screen_scale();
++
++	for (size_t i = 0; i < queue.size() && i < static_cast<size_t>(VR_LABEL_SLOTS); i++) {
++		auto& e = queue[i];
++
++		if (e.font_num >= 0)
++			font::set_font(e.font_num);
++		gr_set_color_fast(&e.clr);
++
++		const int line_h = gr_get_font_height();
++		const int slot_top = gr_screen.max_h - VR_LABEL_H + static_cast<int>(i) * VR_LABEL_SLOT_H;
++
++		int y = slot_top + 2;
++		int widest = 0;
++
++		for (const SCP_string* line : { &e.name, &e.cls, &e.dist }) {
++			if (line->empty() || y + line_h > slot_top + VR_LABEL_SLOT_H)
++				continue;
++
++			int w = 0, h = 0;
++			gr_get_string_size(&w, &h, line->c_str());
++			gr_string(2, y, line->c_str(), GR_RESIZE_NONE);
++
++			widest = std::max(widest, w);
++			y += line_h;
++		}
++
++		e.label_slot = static_cast<int>(i);
++		e.label_w = std::min(widest + 4, VR_LABEL_W);
++		e.label_h = y - slot_top;
++	}
++
++	font::set_font(previous_font);
++
++	gr_opengl_vr_label_end();
++
++	return texture;
++}
++
++static float vr_hud_get_distance()
++{
++	static float distance = -1.0f;
++
++	if (distance < 0.0f) {
++		distance = 1000.0f;
++
++		const char* configured = os_config_read_string("Default", "VRHudDistance", nullptr);
++		if (configured != nullptr) {
++			const float value = static_cast<float>(atof(configured));
++			if (value >= 0.5f && value <= 100000.0f)
++				distance = value;
++		}
++
++		mprintf(("VR HUD: panel distance is %.2f\n", distance));
++	}
++
++	return distance;
++}
++
++// Puts the g3 view onto the virtual HUD camera. Must be called inside a g3 frame.
++static void vr_hud_set_virtual_view(const fov_t& eye_fov)
++{
++	// The eye's stored angles are in "zoom" units; the engine multiplies them by PROJ_FOV_FACTOR (g3_set_fov) to get
++	// the frustum it actually renders with.
++	const asymmetric_fov afov = std::get<asymmetric_fov>(eye_fov) * PROJ_FOV_FACTOR;
++
++	// Same angular size per pixel as the eye's own image, so the HUD keeps the size it always had.
++	const float scale = 0.5f * (2.0f / (tanf(afov.right) - tanf(afov.left)) + 2.0f / (tanf(afov.up) - tanf(afov.down)));
++	const float hfov = 2.0f * atanf(1.0f / scale);
++
++	g3_set_view_matrix(&Vr_hud_base_pos, &Vr_hud_base_orient, hfov / PROJ_FOV_FACTOR);
++
++	Vr_hud_scale_x = Matrix_scale.xyz.x;
++	Vr_hud_scale_y = Matrix_scale.xyz.y;
++}
++
+ void game_render_frame( camid cid, const vec3d* offset, const matrix* rot_offset, const fov_t* fov_override)
+ {
+ 	GR_DEBUG_SCOPE("Main Frame");
+@@ -3563,6 +3713,8 @@ void game_render_frame( camid cid, const vec3d* offset, const matrix* rot_offset
+ 
+ 	camera *cam = cid.getCamera();
+ 
++	Vr_hud_pose_valid = false;
++
+ 	if(cam != nullptr)
+ 	{
+ 		vec3d eye_pos;
+@@ -3570,6 +3722,10 @@ void game_render_frame( camid cid, const vec3d* offset, const matrix* rot_offset
+ 
+ 		//Get current camera info
+ 		cam->get_info(&eye_pos, &eye_orient);
++
++		Vr_hud_base_pos = eye_pos;
++		Vr_hud_base_orient = eye_orient;
++
+ 		if (offset != nullptr) {
+ 			vec3d offset_local;
+ 			vm_vec_unrotate(&offset_local, offset, &eye_orient);
+@@ -3591,6 +3747,10 @@ void game_render_frame( camid cid, const vec3d* offset, const matrix* rot_offset
+ 			apply_view_shake(&eye_orient);		// the camera rotation shouldn't be modified for cutscenes or it will produce feedback
+ 		}
+ 
++		Vr_hud_eye_pos = eye_pos;
++		Vr_hud_eye_orient = eye_orient;
++		Vr_hud_pose_valid = (rot_offset != nullptr);
++
+ 		//Maybe override FOV from SEXP
+ 		if(Sexp_fov <= 0.0f)
+ 			g3_set_view_matrix(&eye_pos, &eye_orient, fov_override ? *fov_override : cam->get_fov());
+@@ -4007,14 +4167,19 @@ void game_render_hud(camid cid, const fov_t* fov_override = nullptr)
+ 	gr_reset_clip();
+ 
+ 	//Since we render things twice in VR mode, frametime needs to be halved for HUD, as the HUD uses the frametime to advance ANI's and crucially, the missile lock...
+-	float frametime = openxr_enabled() ? flFrametime * 0.5f : flFrametime;
++	// (not needed when the VR HUD texture is used: then the HUD is only drawn once per frame)
++	float frametime = (openxr_enabled() && !Vr_hud_active) ? flFrametime * 0.5f : flFrametime;
+ 
+ 	if(cid.isValid()) {
+ 		g3_start_frame(0);		// 0 = turn zbuffering off
+-		g3_set_view( cid.getCamera() );
+ 
+-		if (fov_override)
+-			g3_set_fov(*fov_override);
++		if (Vr_hud_active) {
++			// everything on the HUD is positioned as seen from the virtual HUD camera
++			vr_hud_set_virtual_view(*fov_override);
++			HUD_set_offsets();
++		} else {
++			g3_set_view( cid.getCamera(), fov_override );
++		}
+ 
+ 		hud_render_preprocess(frametime);
+ 
+@@ -4193,44 +4358,107 @@ void game_do_full_frame(DEBUG_TIMER_SIG const vec3d* offset = nullptr, const mat
+ 	//Cutscene bars
+ 	clip_frame_view();
+ 
++	// VR: from here on the HUD is drawn into its own texture, as seen from the virtual HUD camera. What the HUD looks
++	// like does not depend on the eye, so it is drawn only for the first eye of a frame; the second eye shows the same
++	// texture again.
++	const bool vr_hud_candidate = openxr_enabled() && fov_override != nullptr && Vr_hud_pose_valid && std::holds_alternative<asymmetric_fov>(*fov_override);
++	const bool vr_hud_reuse = vr_hud_candidate && Vr_hud_rendered_this_frame;
++
++	int vr_hud_texture = -1;
++	if (vr_hud_candidate && !vr_hud_reuse) {
++		vr_hud_texture = gr_opengl_vr_hud_begin();
++
++		if (vr_hud_texture >= 0) {
++			Vr_hud_active = true;
++			vr_overlay_reset();
++			vr_overlay_set_active(true);
++
++			// scripts that run later need the virtual camera as their view too
++			g3_start_frame(0);
++			vr_hud_set_virtual_view(*fov_override);
++			HUD_set_offsets();
++			g3_end_frame();
++		}
++	}
++
+ 	// save the eye position and orientation
+ 	if (Game_mode & GM_MULTIPLAYER) {
+ 		cid.getCamera()->get_info(&Net_player->s_info.eye_pos, &Net_player->s_info.eye_orient);
+ 	}
+ 
+-	Scripting_didnt_draw_hud = 1;
+-	auto scripting_param_list = scripting::hook_param_list(
+-		scripting::hook_param("Self", 'o', Viewer_obj),
+-		scripting::hook_param("Player", 'o', Player_obj)
+-	);
++	// (the second eye of a VR frame does not draw the HUD again, see above)
++	if (!vr_hud_reuse) {
++		Scripting_didnt_draw_hud = 1;
++		auto scripting_param_list = scripting::hook_param_list(
++			scripting::hook_param("Self", 'o', Viewer_obj),
++			scripting::hook_param("Player", 'o', Player_obj)
++		);
+ 
+-	if (scripting::hooks::OnHudDraw->isActive()) {
+-		Scripting_didnt_draw_hud = scripting::hooks::OnHudDraw->isOverride(scripting::hooks::ObjectDrawConditions{ Viewer_obj }, scripting_param_list) ? 0 : 1;
+-	}
++		if (scripting::hooks::OnHudDraw->isActive()) {
++			Scripting_didnt_draw_hud = scripting::hooks::OnHudDraw->isOverride(scripting::hooks::ObjectDrawConditions{ Viewer_obj }, scripting_param_list) ? 0 : 1;
++		}
+ 
+-	if (Scripting_didnt_draw_hud) {
+-		GR_DEBUG_SCOPE("Render HUD");
+-		TRACE_SCOPE(tracing::RenderHUD);
++		if (Scripting_didnt_draw_hud) {
++			GR_DEBUG_SCOPE("Render HUD");
++			TRACE_SCOPE(tracing::RenderHUD);
+ 
+-		game_render_hud(cid, fov_override);
+-	}
+-	HUD_reset_clip();
++			game_render_hud(cid, fov_override);
++		}
++		HUD_reset_clip();
++
++		if ((Game_detail_flags & DETAIL_FLAG_HUD) && (!(Game_mode & GM_MULTIPLAYER) || ((Game_mode & GM_MULTIPLAYER) && !(Net_player->flags & NETINFO_FLAG_OBSERVER)))) {
++			anim_render_all(0, flFrametime);
++		}
++
++		if (!(Viewer_mode & (VM_EXTERNAL | VM_DEAD_VIEW | VM_WARP_CHASE | VM_PADLOCK_ANY)))
++		{
++			TRACE_SCOPE(tracing::RenderHUDHook);
++
++			// see also hu.isOnHudDrawCalled()
++			if (scripting::hooks::OnHudDraw->isActive()) {
++				if (fov_override && !Vr_hud_active)
++					g3_set_fov(*fov_override);
+ 
+-	if ((Game_detail_flags & DETAIL_FLAG_HUD) && (!(Game_mode & GM_MULTIPLAYER) || ((Game_mode & GM_MULTIPLAYER) && !(Net_player->flags & NETINFO_FLAG_OBSERVER)))) {
+-		anim_render_all(0, flFrametime);
++				scripting::hooks::OnHudDraw->run(scripting::hooks::ObjectDrawConditions{ Viewer_obj }, std::move(scripting_param_list));
++			}
++		}
+ 	}
+ 
+-	if (!(Viewer_mode & (VM_EXTERNAL | VM_DEAD_VIEW | VM_WARP_CHASE | VM_PADLOCK_ANY)))
+-	{
+-		TRACE_SCOPE(tracing::RenderHUDHook);
++	// VR: the HUD is complete. Show its texture as a panel that is fixed to the ship, then give the g3 view back to the eye.
++	if (vr_hud_texture >= 0) {
++		Vr_hud_active = false;
++		vr_overlay_set_active(false);
++		gr_opengl_vr_hud_end();
++		Vr_hud_cached_label = vr_hud_render_labels();
+ 
+-		// see also hu.isOnHudDrawCalled()
+-		if (scripting::hooks::OnHudDraw->isActive()) {
+-			if (fov_override)
+-				g3_set_fov(*fov_override);
++		// remember what the second eye needs to show the same HUD
++		Vr_hud_rendered_this_frame = true;
++		Vr_hud_cached_texture = vr_hud_texture;
++		Vr_hud_cached_pos = Vr_hud_base_pos;
++		Vr_hud_cached_orient = Vr_hud_base_orient;
++		Vr_hud_cached_scale_x = Vr_hud_scale_x;
++		Vr_hud_cached_scale_y = Vr_hud_scale_y;
++	}
+ 
+-			scripting::hooks::OnHudDraw->run(scripting::hooks::ObjectDrawConditions{ Viewer_obj }, std::move(scripting_param_list));
++	if (vr_hud_texture >= 0 || vr_hud_reuse) {
++		gr_reset_clip();
++		gr_vr_hud_draw(Vr_hud_cached_texture, *fov_override, &Vr_hud_eye_pos, &Vr_hud_eye_orient,
++			&Vr_hud_cached_pos, &Vr_hud_cached_orient, vr_hud_get_distance(),
++			Vr_hud_cached_scale_x, Vr_hud_cached_scale_y, i2fl(gr_screen.max_w), i2fl(gr_screen.max_h));
++
++		// the target brackets: frames (and their text) that stand at the direction of their target
++		gr_vr_overlay_draw(Vr_hud_cached_label, *fov_override, &Vr_hud_eye_pos, &Vr_hud_eye_orient,
++			&Vr_hud_cached_pos, &Vr_hud_cached_orient, vr_hud_get_distance(),
++			Vr_hud_cached_scale_x, Vr_hud_cached_scale_y, i2fl(gr_screen.max_w), i2fl(gr_screen.max_h));
++
++		// the damage / sun / explosion flash covers the whole view of each eye, on top of the HUD panel
++		if (Scripting_didnt_draw_hud) {
++			game_flash_draw();
+ 		}
++
++		g3_start_frame(0);
++		g3_set_view_matrix(&Vr_hud_eye_pos, &Vr_hud_eye_orient, *fov_override);
++		g3_end_frame();
+ 	}
+ 
+ 	// check to see if we should display the death died popup
+@@ -4396,6 +4624,8 @@ void game_frame(bool paused)
+ 
+ 				const auto& pose = openxr_start_stereo_frame();
+ 
++				Vr_hud_rendered_this_frame = false;
++
+ 				util::Random::seed(random);
+ 				game_do_full_frame(DEBUG_TIMER_CALL &pose.eyes[0].offset, &pose.eyes[0].orientation, &pose.eyes[0].zoom);
+ 				std::swap(Stars, Stars_XRBuffer);
