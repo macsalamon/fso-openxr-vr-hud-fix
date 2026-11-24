@@ -1,0 +1,104 @@
+diff --git a/autoaim-sct.lua b/autoaim-sct.lua
+index 396d61f..98dcae7 100644
+--- a/autoaim-sct.lua
++++ b/autoaim-sct.lua
+@@ -8,7 +8,14 @@
+ 
+ AutoAim = {
+ 
+-	occluder_color = {165, 103, 23, 50},  --half transparent dark tan color
++	occluder_color = {165, 103, 43, 40},  --half transparent dark tan color
++	--targeting computer tint (VR HUD fix): "center" = soft tint only around the middle of the HUD (default),
++	--"full" = whole screen (original behaviour, very annoying in VR), "off" = no tint (the red box around the reticle remains)
++	occluder_mode = "center",
++	occluder_center_shape = "rectangle", --"center" mode: "rectangle" or "circle"
++	occluder_center_radius = 0.1, --"center" mode: half the height of the tint (circle: its radius), as a fraction of the screen height. The circle used 0.21
++	occluder_center_aspect = 1.6, --"rectangle": width divided by height
++	occluder_center_steps = 3, --"center" mode: number of stacked shapes, more = smoother edge. The circle used 6
+ 	base_gauge_id_center = 9,
+ 	base_gauge_id_lead = 0,
+ 	default_fvec = 1500,
+@@ -915,20 +922,50 @@ AutoAim.button_info = {
+ 
+ 	end
+ 
+-	function AutoAim:DrawSecondary(draw) --yes multi, recall observer check already ran in On Frame function
++	function AutoAim:DrawSecondary(draw, hud_pass) --yes multi, recall observer check already ran in On Frame function
+ 
+ 		--if self.is_multiplayer then return end
+ 
+ 		--draw occluder, the gauge has already been toggled on
+ 		if draw and self.SecondaryAutoAimOn then
+ 			local occ = self.occluder_color
+-			gr.setColor(occ[1], occ[2], occ[3], occ[4])
+-			gr.drawRectangle(0, 0, gr.getScreenWidth(), gr.getScreenHeight(), true)
++			local mode = self.occluder_mode
++
++			if mode == "full" then
++				--whole screen, from the On Frame hook (original behaviour)
++				if not hud_pass then
++					gr.setColor(occ[1], occ[2], occ[3], occ[4])
++					gr.drawRectangle(0, 0, gr.getScreenWidth(), gr.getScreenHeight(), true)
++				end
++			elseif mode == "center" then
++				--VR HUD fix: soft tint around the middle of the HUD only, drawn from the On HUD Draw hook so it is part of the HUD panel
++				if hud_pass then
++					local sw = gr.getScreenWidth()
++					local sh = gr.getScreenHeight()
++					local steps = math.max(1, math.floor(self.occluder_center_steps))
++					local max_r = sh * self.occluder_center_radius
++					local step_alpha = math.max(1, math.floor(occ[4] / steps + 0.5))
++					gr.setColor(occ[1], occ[2], occ[3], step_alpha)
++					local cx = sw * 0.5
++					local cy = sh * 0.5
++					local rectangle = (self.occluder_center_shape ~= "circle")
++					local aspect = self.occluder_center_aspect or 1.6
++					for k = steps, 1, -1 do
++						local r = max_r * k / steps
++						if rectangle then
++							gr.drawRectangle(cx - r * aspect, cy - r, cx + r * aspect, cy + r, true)
++						else
++							gr.drawCircle(r, cx, cy, true)
++						end
++					end
++				end
++			end
++			--any other value (e.g. "off"): no tint
+ 		end
+ 
+ 	end
+ 
+-	function AutoAim:OnFrame() --yes multi, recall run observer check here
++	function AutoAim:OnFrame(hud_pass) --yes multi, recall run observer check here. hud_pass = true when called from "On HUD Draw" (VR HUD fix: the circle is drawn there so it follows the HUD)
+ 
+ 		if not MTIME_OVER_P1 then 
+ 			return 
+@@ -952,13 +989,13 @@ AutoAim.button_info = {
+ 
+ 			--secondary just draws rectangle so can draw in more cases
+ 			if gr.hasViewmode(VM_INTERNAL) or self:Helper_BomberViewOn() then
+-				self:DrawSecondary(draw)
++				self:DrawSecondary(draw, hud_pass)
+ 			end
+ 
+ 			--only draw circle aimer if looking forward
+ 			--recall track messes up the auto aim screen coordinates
+ 			if (gr.hasViewmode(VM_INTERNAL) or gr.hasViewmode(VM_CHASE)) and gr.hasViewmode(VM_CAMERA_LOCKED) then
+-				self:DrawPrimary(player, draw)
++				self:DrawPrimary(player, draw and hud_pass)
+ 			end
+ 
+ 		end
+@@ -1095,6 +1132,12 @@ if not IS_STANDALONE then
+ 		{State="GS_STATE_GAME_PLAY"}
+ 	)
+ 
++	engine.addHook("On HUD Draw", function()
++			AutoAim:OnFrame(true)
++		end,
++		{State="GS_STATE_GAME_PLAY"}
++	)
++
+ 	io.Keybinding["CYCLE_NEXT_PRIMARY"]:registerHook(function()
+ 		AutoAim:Set_FOV(FotG:GetPlayerShip(), true) --"Cycle Primary Weapon Forward"
+ 		return false

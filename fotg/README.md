@@ -30,7 +30,33 @@ occluder_center_steps = 6,
 | `occluder_mode` | `"center"` = soft glow around the middle of the HUD (default here). `"off"` = no tint at all. `"full"` = whole screen, as in the original. |
 | `occluder_color` | Red, green, blue and **opacity** (0 - 255) of the tint. The last number is the strength: `20` is subtle, `50` is the original FotG value, `0` = invisible. |
 | `occluder_center_radius` | `"center"` mode: size of the glow as a fraction of the screen height. `0.21` roughly covers the area used for target lock. |
-| `occluder_center_steps` | `"center"` mode: number of stacked circles that make the fade. More = smoother edge, but each circle needs an opacity of at least ~5, so the script limits the count to `opacity / 5` (opacity 20 -> at most 4 circles, 50 -> 10). Without that limit, many very faint circles lose their green and blue in the 8-bit HUD texture and the glow turns red. |
+| `occluder_center_steps` | `"center"` mode: number of stacked circles that make the fade. More = smoother edge, but every circle is very faint: with a very high count and a low opacity the green and blue are lost in the 8-bit HUD texture and the glow turns reddish. If that happens, lower the count or raise the opacity. (There is no automatic limit.) |
+
+### Rectangle instead of a circle (FotG 2.0.2 script, v0.4.0)
+
+The FotG 2.0.2 script (zip `VRHUDfix_FotG2.0.2_targeting_computer_script.zip`) draws the glow as a **rectangle** by default,
+which fits the look of a cockpit targeting display better, especially in VR. The settings are:
+
+```lua
+occluder_color = {165, 103, 43, 40},
+occluder_mode = "center",
+occluder_center_shape = "rectangle",
+occluder_center_radius = 0.1,
+occluder_center_aspect = 1.6,
+occluder_center_steps = 3,
+```
+
+| Setting | Meaning |
+|---|---|
+| `occluder_center_shape` | `"rectangle"` (default) or `"circle"`. |
+| `occluder_center_radius` | Half the **height** of the glow (for the circle: its radius), as a fraction of the screen height. Rectangle default `0.1`, circle used `0.21`. |
+| `occluder_center_aspect` | Rectangle only: width divided by height (`1.6`). |
+| `occluder_color` | As above. The rectangle script uses opacity `40` (the circle scripts use `20`); `50` is the original FotG value. |
+| `occluder_center_steps` | Number of nested shapes that make the soft edge (rectangle default `3`, the circle used `6`). |
+
+The sizes are relative to the HUD, so the glow can look smaller or bigger depending on the HUD panel of the engine you use; change
+`occluder_center_radius` to taste. Differences to the original file: [`autoaim-sct-2.0.2-rectangle.diff`](autoaim-sct-2.0.2-rectangle.diff).
+The FotG 1.1.x scripts in this folder still have the circle only.
 
 To get the original FotG behaviour back: set `occluder_mode = "full"` and `occluder_color = {165, 103, 23, 50}`, or restore FotG's
 original file (a FotG update / "Verify/Repair" does that as well).

@@ -1,0 +1,706 @@
+diff --git a/code/graphics/2d.cpp b/code/graphics/2d.cpp
+index 67196cb..3146119 100644
+--- a/code/graphics/2d.cpp
++++ b/code/graphics/2d.cpp
+@@ -1064,6 +1064,10 @@ float gr_wanted_composition_scale(bool fsr_upscaling)
+ static int Screen_layer = -1;
+ static int Screen_layer_w = 0;
+ static int Screen_layer_h = 0;
++static int Screen_label_layer = -1;
++static int Screen_label_layer_w = 0;
++static int Screen_label_layer_h = 0;
++static bool Screen_label_layer_wanted = false;
+ static float Screen_layer_relative_scale = 0.0f;
+ static bool Screen_layer_active = false;
+ static float Screen_layer_saved_scale = 1.0f;
+@@ -1085,34 +1089,59 @@ void gr_screen_layer_resize()
+ 		i2fl(Gr_max_output_size) / i2fl(std::max(gr_screen.max_w, gr_screen.max_h)));
+ 	const int w = static_cast<int>(std::lround(gr_screen.max_w * scale));
+ 	const int h = static_cast<int>(std::lround(gr_screen.max_h * scale));
+-	if (Screen_layer >= 0) {
+-		if (w == Screen_layer_w && h == Screen_layer_h) {
+-			return;
++
++	// The same formats as the screen, so that whatever can draw to the screen (like ImGui) can draw into the layer too
++	auto make_layer = [&](int& bitmap, int& current_w, int& current_h) {
++		if (bitmap >= 0) {
++			if (w == current_w && h == current_h) {
++				return;
++			}
++			bm_release(bitmap, 1);
+ 		}
+-		bm_release(Screen_layer, 1);
++
++		bitmap = bm_make_render_target(w, h,
++			BMP_FLAG_RENDER_TARGET_DYNAMIC | BMP_FLAG_RENDER_TARGET_DEPTH_ATTACHMENT | BMP_FLAG_RENDER_TARGET_HDR);
++		current_w = w;
++		current_h = h;
++	};
++
++	make_layer(Screen_layer, Screen_layer_w, Screen_layer_h);
++
++	if (Screen_label_layer_wanted) {
++		make_layer(Screen_label_layer, Screen_label_layer_w, Screen_label_layer_h);
+ 	}
++}
+ 
+-	// The same formats as the screen, so that whatever can draw to the screen (like ImGui) can draw into the layer too
+-	Screen_layer = bm_make_render_target(w, h,
+-		BMP_FLAG_RENDER_TARGET_DYNAMIC | BMP_FLAG_RENDER_TARGET_DEPTH_ATTACHMENT | BMP_FLAG_RENDER_TARGET_HDR);
+-	Screen_layer_w = w;
+-	Screen_layer_h = h;
++void gr_screen_label_layer_enable()
++{
++	Screen_label_layer_wanted = true;
++	gr_screen_layer_resize();
+ }
+ 
+-int gr_screen_layer_begin()
++static int screen_layer_begin(int layer)
+ {
+ 	Assertion(!Screen_layer_active, "Screen layers must not be nested!");
+-	if (Screen_layer < 0 || !gr_screen.gf_screen_layer_begin(Screen_layer)) {
++	if (layer < 0 || !gr_screen.gf_screen_layer_begin(layer)) {
+ 		return -1;
+ 	}
+ 
+ 	int w, h;
+-	bm_get_info(Screen_layer, &w, &h);
++	bm_get_info(layer, &w, &h);
+ 	Screen_layer_saved_scale = Gr_composition_scale;
+ 	Gr_composition_scale = i2fl(w) / i2fl(gr_screen.max_w);
+ 	Screen_layer_active = true;
+ 
+-	return Screen_layer;
++	return layer;
++}
++
++int gr_screen_layer_begin()
++{
++	return screen_layer_begin(Screen_layer);
++}
++
++int gr_screen_label_layer_begin()
++{
++	return screen_layer_begin(Screen_label_layer);
+ }
+ 
+ void gr_screen_layer_end()
+diff --git a/code/graphics/2d.h b/code/graphics/2d.h
+index 5533eff..e22c0e0 100644
+--- a/code/graphics/2d.h
++++ b/code/graphics/2d.h
+@@ -1618,6 +1618,12 @@ void gr_screen_layer_resize();
+ int gr_screen_layer_begin();
+ void gr_screen_layer_end();
+ 
++// A second layer of the same size, for the VR target brackets' name texts (see hud/hudvr.h). It is only made after
++// gr_screen_label_layer_enable(). Used like gr_screen_layer_begin(), and ended with gr_screen_layer_end(); it must not be
++// nested with the first layer.
++void gr_screen_label_layer_enable();
++int gr_screen_label_layer_begin();
++
+ inline void gr_bind_uniform_buffer(uniform_block_type bind_point, size_t offset, size_t size, gr_buffer_handle buffer)
+ {
+ 	gr_screen.gf_bind_uniform_buffer(bind_point, offset, size, buffer);
+diff --git a/code/hud/hudbrackets.cpp b/code/hud/hudbrackets.cpp
+index 0337ad4..4b38350 100644
+--- a/code/hud/hudbrackets.cpp
++++ b/code/hud/hudbrackets.cpp
+@@ -12,6 +12,7 @@
+ #include "asteroid/asteroid.h"
+ #include "cmdline/cmdline.h"
+ #include "debris/debris.h"
++#include "hud/hudvr.h"
+ #include "hud/hudbrackets.h"
+ #include "hud/hudtarget.h"
+ #include "iff_defs/iff_defs.h"
+@@ -355,6 +356,136 @@ void HudGaugeBrackets::initBitmaps(char *fname)
+ 	}
+ }
+ 
++
++// VR: the target frame is not drawn into the HUD texture. It is queued, and drawn for each eye at the direction of the
++// target (see vr_overlay_bracket in graphics/matrix.h).
++static void hud_queue_vr_bracket(object* targetp, int font_num, int flags, float distance)
++{
++	vr_overlay_bracket b;
++
++	int modelnum = -1;
++	int submodel_num = -1;
++
++	switch (targetp->type) {
++	case OBJ_SHIP:
++		modelnum = Ship_info[Ships[targetp->instance].ship_info_index].model_num;
++		break;
++	case OBJ_DEBRIS:
++		modelnum = Debris[targetp->instance].model_num;
++		submodel_num = Debris[targetp->instance].submodel_num;
++		break;
++	case OBJ_WEAPON:
++		modelnum = Weapon_info[Weapons[targetp->instance].weapon_info_index].model_num;
++		break;
++	case OBJ_ASTEROID: {
++		int pof = Asteroids[targetp->instance].asteroid_subtype;
++		modelnum = Asteroid_info[Asteroids[targetp->instance].asteroid_type].subtypes[pof].model_number;
++		break;
++	}
++	case OBJ_JUMP_NODE: {
++		auto jnp = jumpnode_get_by_objp(targetp);
++		modelnum = jnp ? jnp->GetModelNumber() : -1;
++		break;
++	}
++	default:
++		return;
++	}
++
++	// bounding box of the target (a small cube if it has no model)
++	vec3d mn = { { { -1.0f, -1.0f, -1.0f } } };
++	vec3d mx = { { { 1.0f, 1.0f, 1.0f } } };
++
++	if (modelnum >= 0) {
++		polymodel* pm = model_get(modelnum);
++		if (pm != nullptr) {
++			if (submodel_num >= 0 && submodel_num < pm->n_models) {
++				mn = pm->submodel[submodel_num].min;
++				mx = pm->submodel[submodel_num].max;
++			} else {
++				mn = pm->mins;
++				mx = pm->maxs;
++			}
++		}
++	}
++
++	for (int i = 0; i < 8; i++) {
++		vec3d local;
++		local.xyz.x = (i & 1) ? mx.xyz.x : mn.xyz.x;
++		local.xyz.y = (i & 2) ? mx.xyz.y : mn.xyz.y;
++		local.xyz.z = (i & 4) ? mx.xyz.z : mn.xyz.z;
++
++		vm_vec_unrotate(&b.corners[i], &local, &targetp->orient);
++		vm_vec_add2(&b.corners[i], &targetp->pos);
++	}
++
++	b.pos = targetp->pos;
++	b.clr = gr_screen.current_color;
++	b.objnum = OBJ_INDEX(targetp);
++	b.font_num = font_num;
++
++	if (flags & TARGET_DISPLAY_DIST) {
++		char text_dist[64];
++		sprintf(text_dist, "%d", static_cast<int>(std::lround(distance * Hud_unit_multiplier)));
++		b.dist = text_dist;
++	}
++
++	if (flags & (TARGET_DISPLAY_NAME | TARGET_DISPLAY_CLASS)) {
++		const char* tinfo_name = nullptr;
++		const char* tinfo_class = nullptr;
++		char temp_name[NAME_LENGTH*2+3];
++		char temp_class[NAME_LENGTH];
++
++		switch (targetp->type) {
++		case OBJ_SHIP:
++			hud_stuff_ship_name(temp_name, &Ships[targetp->instance]);
++			hud_stuff_ship_class(temp_class, &Ships[targetp->instance]);
++			tinfo_name = temp_name;
++			tinfo_class = temp_class;
++
++			// maybe concatenate the callsign
++			if (*temp_name) {
++				char temp_callsign[NAME_LENGTH];
++
++				hud_stuff_ship_callsign(temp_callsign, &Ships[targetp->instance]);
++				if (*temp_callsign)
++					sprintf(&temp_name[strlen(temp_name)], " (%s)", temp_callsign);
++			} else { // maybe substitute the callsign
++				hud_stuff_ship_callsign(temp_name, &Ships[targetp->instance]);
++			}
++			break;
++		case OBJ_DEBRIS:
++			tinfo_name = XSTR("debris", 348);
++			break;
++		case OBJ_WEAPON:
++			tinfo_name = Weapon_info[Weapons[targetp->instance].weapon_info_index].get_display_name();
++			break;
++		case OBJ_ASTEROID:
++			switch (Asteroids[targetp->instance].asteroid_type) {
++			case ASTEROID_TYPE_SMALL:
++			case ASTEROID_TYPE_MEDIUM:
++			case ASTEROID_TYPE_LARGE:
++				tinfo_name = XSTR("asteroid", 431);
++				break;
++			default:
++				tinfo_name = XSTR("debris", 348);
++			}
++			break;
++		case OBJ_JUMP_NODE: {
++			auto jnp = jumpnode_get_by_objnum(OBJ_INDEX(targetp));
++			tinfo_name = jnp ? jnp->GetDisplayName() : "";
++			break;
++		}
++		}
++
++		if (tinfo_name && (flags & TARGET_DISPLAY_NAME))
++			b.name = tinfo_name;
++		if (tinfo_class && (flags & TARGET_DISPLAY_CLASS))
++			b.cls = tinfo_class;
++	}
++
++	vr_overlay_add(std::move(b));
++}
++
+ void HudGaugeBrackets::render(float  /*frametime*/, bool config)
+ {
+ 	// Brackets are do not support config settings
+@@ -385,6 +516,21 @@ void HudGaugeBrackets::render(float  /*frametime*/, bool config)
+ 		}
+ 	}
+ 
++	// VR: the player's target gets a frame wherever it is, not only when it is in front of the virtual HUD camera
++	if (vr_overlay_brackets_active() && Player_ai->target_objnum >= 0 && Player->target_is_dying <= 0) {
++		object* targetp = &Objects[Player_ai->target_objnum];
++
++		if (targetp->type == OBJ_SHIP || targetp->type == OBJ_DEBRIS || targetp->type == OBJ_WEAPON ||
++			targetp->type == OBJ_ASTEROID || targetp->type == OBJ_JUMP_NODE) {
++			int flags = TARGET_DISPLAY_DIST;
++			if (Extra_target_info)
++				flags |= TARGET_DISPLAY_NAME | TARGET_DISPLAY_CLASS;
++
++			hud_set_iff_color(targetp, 1);
++			hud_queue_vr_bracket(targetp, font_num, flags, Player_ai->current_target_distance);
++		}
++	}
++
+ 	line_draw_list.flush();
+ 
+ 	if(!in_frame)
+@@ -477,7 +623,10 @@ void HudGaugeBrackets::renderObjectBrackets(object *targetp, color *clr, int w_c
+ 			hud_set_iff_color(targetp, 1);
+ 		}
+ 
+-		if ( draw_box ) {
++		// VR: the frame is drawn by the per-eye bracket overlay, whether or not it fits on the HUD texture
++		const bool vr_brackets = vr_overlay_brackets_active();
++
++		if ( draw_box || vr_brackets ) {
+ 			float distance = 0.0f; // init to 0 if we don't have to display distance
+ 			int target_objnum = -1;
+ 
+@@ -495,7 +644,11 @@ void HudGaugeBrackets::renderObjectBrackets(object *targetp, color *clr, int w_c
+ 				target_objnum = OBJ_INDEX(targetp);
+ 			}
+ 
+-			renderBoundingBrackets(x1-5, y1-5, x2+5, y2+5, w_correction, h_correction, distance, target_objnum, flags);
++			if (vr_brackets) {
++				hud_queue_vr_bracket(targetp, font_num, flags, distance);
++			} else {
++				renderBoundingBrackets(x1-5, y1-5, x2+5, y2+5, w_correction, h_correction, distance, target_objnum, flags);
++			}
+ 		}
+ 
+ 		if ( (targetp->type == OBJ_SHIP) && (flags & TARGET_DISPLAY_SUBSYS) ) {
+diff --git a/code/hud/hudvr.cpp b/code/hud/hudvr.cpp
+index 024fd91..76a448d 100644
+--- a/code/hud/hudvr.cpp
++++ b/code/hud/hudvr.cpp
+@@ -5,7 +5,9 @@
+ #include "graphics/matrix.h"
+ #include "graphics/openxr.h"
+ #include "graphics/render.h"
++#include "graphics/software/font.h"
+ #include "hud/hud.h"
++#include "osapi/osregistry.h"
+ #include "render/3d.h"
+ 
+ namespace {
+@@ -27,6 +29,297 @@ matrix Panel_orient;
+ 
+ }
+ 
++// ---------------------------------------------------------------------------------------------------------------------
++// VR target brackets (see hudvr.h)
++// ---------------------------------------------------------------------------------------------------------------------
++namespace {
++
++SCP_vector<vr_overlay_bracket> Overlay_queue;
++int Label_bitmap = -1;
++
++// "VRHudBillboardBrackets=0" in the [Default] section of fs2_open.ini switches the feature off. Read once.
++bool overlay_feature_on()
++{
++	static int on = -1;
++
++	if (on < 0) {
++		on = 1;
++
++		const char* configured = os_config_read_string("Default", "VRHudBillboardBrackets", nullptr);
++		if (configured != nullptr && atoi(configured) == 0) {
++			on = 0;
++		}
++
++		mprintf(("VR HUD: billboard target brackets are %s\n", on ? "on" : "off"));
++	}
++
++	return on != 0;
++}
++
++// Renders the name text of every queued bracket into the label layer, one slot per bracket
++void overlay_render_labels()
++{
++	Label_bitmap = -1;
++
++	bool any_text = false;
++	for (const auto& e : Overlay_queue) {
++		any_text = any_text || !e.name.empty() || !e.cls.empty() || !e.dist.empty();
++	}
++
++	if (!any_text) {
++		return;
++	}
++
++	Label_bitmap = gr_screen_label_layer_begin();
++	if (Label_bitmap < 0) {
++		return;
++	}
++
++	const int previous_font = font::get_current_fontnum();
++
++	gr_reset_clip();
++	gr_reset_screen_scale();
++
++	for (size_t i = 0; i < Overlay_queue.size() && i < static_cast<size_t>(VR_LABEL_SLOTS); i++) {
++		auto& e = Overlay_queue[i];
++
++		if (e.font_num >= 0) {
++			font::set_font(e.font_num);
++		}
++		gr_set_color_fast(&e.clr);
++
++		const int line_h = gr_get_font_height();
++		const int slot_top = static_cast<int>(i) * VR_LABEL_SLOT_H;
++
++		int y = slot_top + 2;
++		int widest = 0;
++
++		for (const SCP_string* line : { &e.name, &e.cls, &e.dist }) {
++			if (line->empty() || y + line_h > slot_top + VR_LABEL_SLOT_H) {
++				continue;
++			}
++
++			int w = 0, h = 0;
++			gr_get_string_size(&w, &h, line->c_str());
++			gr_string(2, y, line->c_str(), GR_RESIZE_NONE);
++
++			widest = std::max(widest, w);
++			y += line_h;
++		}
++
++		e.label_slot = static_cast<int>(i);
++		e.label_w = std::min(widest + 4, gr_screen.max_w);
++		e.label_h = y - slot_top;
++	}
++
++	font::set_font(previous_font);
++
++	gr_screen_layer_end();
++}
++
++// Draws the queued brackets for the eye being rendered. Called with the eye's view, right after the panel.
++void overlay_draw(const fov_t& eye_fov)
++{
++	if (Overlay_queue.empty()) {
++		return;
++	}
++
++	// The panel's frustum (see hud_vr_draw_panel()): how many HUD pixels fit into one unit of tangent at its centre
++	const float tan_y = tanf(PANEL_FOV * PROJ_FOV_FACTOR * 0.5f);
++	const float tan_x = tan_y * i2fl(gr_screen.max_w) / (i2fl(gr_screen.max_h) * gr_screen.aspect);
++	const float fx = i2fl(gr_screen.max_w) * 0.5f / tan_x;
++	const float fy = i2fl(gr_screen.max_h) * 0.5f / tan_y;
++
++	// where the virtual HUD camera is, relative to the eye
++	vec3d hud_offset;
++	vm_vec_sub(&hud_offset, &Panel_pos, &Eye_pos);
++
++	// sizes in HUD pixels
++	constexpr float THICKNESS = 1.0f;
++	constexpr float PADDING = 5.0f;
++	constexpr float MIN_HALF_SIZE = 18.0f;
++	constexpr float LABEL_GAP = 4.0f;
++
++	struct label_vertex {
++		vec3d pos;
++		float u, v;
++	};
++
++	// A screen layer keeps the rows in the order of the screen's framebuffer, which OpenGL stores bottom up
++	const float v_screen_top = gr_screen.mode == GraphicsAPI::OpenGL ? 1.0f : 0.0f;
++	const float v_screen_bottom = 1.0f - v_screen_top;
++	auto layer_v = [&](float y) { return v_screen_top + (v_screen_bottom - v_screen_top) * (y / i2fl(gr_screen.max_h)); };
++	auto layer_u = [&](float x) { return x / i2fl(gr_screen.max_w); };
++
++	gr_reset_clip();
++	gr_set_proj_matrix(eye_fov * PROJ_FOV_FACTOR, gr_screen.clip_aspect, PANEL_DISTANCE * 0.1f, PANEL_DISTANCE * 10.0f);
++	gr_set_view_matrix(&vmd_zero_vector, &Eye_orient);
++
++	for (const auto& e : Overlay_queue) {
++		// direction of the target as seen from the virtual HUD camera
++		vec3d dir;
++		vm_vec_sub(&dir, &e.pos, &Panel_pos);
++		if (vm_vec_mag(&dir) < 0.01f) {
++			continue;
++		}
++		vm_vec_normalize(&dir);
++
++		// the frame's axes: the ship's right and up axes, projected onto the plane the frame stands on
++		vec3d right = Panel_orient.vec.rvec;
++		vm_vec_scale_add2(&right, &dir, -vm_vec_dot(&right, &dir));
++		if (vm_vec_mag(&right) < 0.001f) {
++			// looking straight along the ship's right axis: fall back to the up axis
++			right = Panel_orient.vec.uvec;
++			vm_vec_scale_add2(&right, &dir, -vm_vec_dot(&right, &dir));
++		}
++		vm_vec_normalize(&right);
++
++		vec3d up;
++		vm_vec_cross(&up, &dir, &right);
++		if (vm_vec_dot(&up, &Panel_orient.vec.uvec) < 0.0f) {
++			vm_vec_negate(&up);
++		}
++
++		// extent of the bounding box on that plane (tangent units), seen from the virtual HUD camera
++		float a_min = 1e9f, a_max = -1e9f, b_min = 1e9f, b_max = -1e9f;
++		bool clamped = false;
++
++		for (const auto& corner : e.corners) {
++			vec3d v;
++			vm_vec_sub(&v, &corner, &Panel_pos);
++			const float len = vm_vec_mag(&v);
++			const float depth = vm_vec_dot(&v, &dir);
++
++			if (depth <= 0.2f * len) {
++				clamped = true;		// the corner is (almost) beside or behind us: the target is huge and close
++				continue;
++			}
++
++			const float a = vm_vec_dot(&v, &right) / depth;
++			const float b = vm_vec_dot(&v, &up) / depth;
++			a_min = std::min(a_min, a); a_max = std::max(a_max, a);
++			b_min = std::min(b_min, b); b_max = std::max(b_max, b);
++		}
++
++		if (clamped || a_min > a_max) {
++			a_min = b_min = -2.0f;
++			a_max = b_max = 2.0f;
++		}
++
++		// the frame in HUD pixels: centre and half size, with similar padding and minimum size as the HUD frame has
++		const float cx = 0.5f * (a_min + a_max) * fx;
++		const float cy = 0.5f * (b_min + b_max) * fy;
++		const float hw = std::max(0.5f * (a_max - a_min) * fx + PADDING, MIN_HALF_SIZE);
++		const float hh = std::max(0.5f * (b_max - b_min) * fy + PADDING, MIN_HALF_SIZE);
++
++		// HUD pixel (px right, py up, relative to the target direction) -> position relative to the eye
++		auto point = [&](float px, float py) {
++			vec3d p = dir;
++			vm_vec_scale_add2(&p, &right, px / fx);
++			vm_vec_scale_add2(&p, &up, py / fy);
++			vm_vec_scale(&p, PANEL_DISTANCE);
++			vm_vec_add2(&p, &hud_offset);
++			return p;
++		};
++
++		// ---- the frame: corner brackets, 50% of the way along each side
++		SCP_vector<vec3d> tris;
++		tris.reserve(4 * 2 * 6);
++
++		auto rect = [&](float x0, float y0, float x1, float y1) {
++			const vec3d p00 = point(x0, y0), p10 = point(x1, y0), p01 = point(x0, y1), p11 = point(x1, y1);
++			tris.push_back(p00); tris.push_back(p10); tris.push_back(p11);
++			tris.push_back(p00); tris.push_back(p11); tris.push_back(p01);
++		};
++
++		const float arm_x = std::max(hw * 0.5f, THICKNESS * 2.0f);
++		const float arm_y = std::max(hh * 0.5f, THICKNESS * 2.0f);
++
++		for (int sx = -1; sx <= 1; sx += 2) {
++			for (int sy = -1; sy <= 1; sy += 2) {
++				const float ox = cx + sx * hw;
++				const float oy = cy + sy * hh;
++				rect(ox, oy, ox - sx * arm_x, oy - sy * THICKNESS);		// horizontal arm
++				rect(ox, oy, ox - sx * THICKNESS, oy - sy * arm_y);		// vertical arm
++			}
++		}
++
++		{
++			color frame_clr;
++			gr_init_alphacolor(&frame_clr, e.clr.red, e.clr.green, e.clr.blue, 255);
++
++			material mat;
++			material_set_unlit_color(&mat, -1, &frame_clr, true, false);
++
++			vertex_layout layout;
++			layout.add_vertex_component(vertex_format_data::POSITION3, sizeof(vec3d), 0);
++
++			gr_render_primitives_immediate(&mat, PRIM_TYPE_TRIS, &layout, static_cast<int>(tris.size()), tris.data(), tris.size() * sizeof(vec3d));
++		}
++
++		// ---- the label, centred under the frame
++		if (Label_bitmap >= 0 && e.label_slot >= 0 && e.label_w > 0 && e.label_h > 0) {
++			const float lw = static_cast<float>(e.label_w);
++			const float lh = static_cast<float>(e.label_h);
++			const float slot_top = static_cast<float>(e.label_slot * VR_LABEL_SLOT_H);
++
++			const float x0 = cx - lw * 0.5f, x1 = cx + lw * 0.5f;
++			const float y_top = cy - hh - LABEL_GAP, y_bottom = y_top - lh;
++
++			auto vtx = [&](float px, float py, float x, float y) {
++				return label_vertex{ point(px, py), layer_u(x), layer_v(y) };
++			};
++
++			label_vertex verts[4] = {
++				vtx(x0, y_top, 0.0f, slot_top),
++				vtx(x1, y_top, lw, slot_top),
++				vtx(x0, y_bottom, 0.0f, slot_top + lh),
++				vtx(x1, y_bottom, lw, slot_top + lh),
++			};
++
++			vertex_layout layout;
++			layout.add_vertex_component(vertex_format_data::POSITION3, sizeof(label_vertex), offsetof(label_vertex, pos));
++			layout.add_vertex_component(vertex_format_data::TEX_COORD2, sizeof(label_vertex), offsetof(label_vertex, u));
++
++			material mat;
++			material_set_interface(&mat, Label_bitmap, true, 1.0f);
++			mat.set_blend_mode(ALPHA_BLEND_PREMULTIPLIED);
++
++			gr_render_primitives_immediate(&mat, PRIM_TYPE_TRISTRIP, &layout, 4, verts, sizeof(verts));
++		}
++	}
++
++	gr_end_view_matrix();
++	gr_end_proj_matrix();
++}
++
++}
++
++bool vr_overlay_brackets_active()
++{
++	return Panel_drawing && overlay_feature_on();
++}
++
++void vr_overlay_add(vr_overlay_bracket&& bracket)
++{
++	// the same object can be bracketed by more than one gauge entry: keep one frame, with the most complete label
++	for (auto& existing : Overlay_queue) {
++		if (bracket.objnum >= 0 && existing.objnum == bracket.objnum) {
++			if (existing.name.empty() && existing.cls.empty() && existing.dist.empty()) {
++				existing.name = bracket.name;
++				existing.cls = bracket.cls;
++				existing.font_num = bracket.font_num;
++			}
++			if (existing.dist.empty()) {
++				existing.dist = bracket.dist;
++			}
++			return;
++		}
++	}
++
++	Overlay_queue.push_back(std::move(bracket));
++}
++
+ void hud_vr_init()
+ {
+ 	const auto eye_fov = openxr_get_eye_fov();
+@@ -37,7 +330,22 @@ void hud_vr_init()
+ 	// As many pixels per angle as the eye's own image at its center: as sharp as the HMD can show, and no more
+ 	const float eye_tan_height = tanf(eye_fov->up) - tanf(eye_fov->down);
+ 	const float panel_tan_height = 2.0f * tanf(PANEL_FOV * PROJ_FOV_FACTOR * 0.5f);
+-	gr_screen_layer_init(panel_tan_height / eye_tan_height);
++
++	// The HUD panel is drawn into the eyes with a rotation and a resampling, which blurs text that has only one texel per
++	// eye pixel. VRHudResolutionScale (fs2_open.ini, [Default], default 2, 1.0 - 4.0) draws the HUD and the bracket texts
++	// at that many times the eye's pixel density, like the first versions of the VR HUD fix did.
++	float hud_scale = 2.0f;
++	const char* configured_scale = os_config_read_string("Default", "VRHudResolutionScale", nullptr);
++	if (configured_scale != nullptr && atof(configured_scale) > 0.0) {
++		hud_scale = std::min(std::max(static_cast<float>(atof(configured_scale)), 1.0f), 4.0f);
++	}
++	mprintf(("VR HUD: panel resolution scale is %.2f\n", hud_scale));
++
++	gr_screen_layer_init(panel_tan_height / eye_tan_height * hud_scale);
++
++	if (overlay_feature_on()) {
++		gr_screen_label_layer_enable();
++	}
+ }
+ 
+ VrHudPass hud_vr_begin_maybe(const vec3d* camera_pos, const matrix* camera_orient)
+@@ -57,6 +365,9 @@ VrHudPass hud_vr_begin_maybe(const vec3d* camera_pos, const matrix* camera_orien
+ 	Panel_bitmap = gr_screen_layer_begin();
+ 	Assertion(Panel_bitmap >= 0, "The renderer could not create the VR HUD panel!");
+ 
++	Overlay_queue.clear();
++	Label_bitmap = -1;
++
+ 	Panel_drawing = true;
+ 	Panel_pos = *camera_pos;
+ 	Panel_orient = *camera_orient;
+@@ -77,6 +388,8 @@ void hud_vr_end()
+ 
+ 	gr_screen_layer_end();
+ 	Panel_drawing = false;
++
++	overlay_render_labels();
+ }
+ 
+ bool hud_vr_drawing_panel()
+@@ -147,6 +460,8 @@ void hud_vr_draw_panel(const fov_t& eye_fov)
+ 	gr_end_view_matrix();
+ 	gr_end_proj_matrix();
+ 
++	overlay_draw(eye_fov);
++
+ 	g3_start_frame(0);
+ 	g3_set_view_matrix(&Eye_pos, &Eye_orient, eye_fov);
+ 	g3_end_frame();
+diff --git a/code/hud/hudvr.h b/code/hud/hudvr.h
+index 127edcc..2b116ec 100644
+--- a/code/hud/hudvr.h
++++ b/code/hud/hudvr.h
+@@ -1,6 +1,8 @@
+ #pragma once
+ 
+ #include "camera/camera.h"
++#include "graphics/2d.h"
++#include "globalincs/pstypes.h"
+ 
+ // In VR, the HUD is drawn once per frame, as seen from the ship's camera without the head tracking, into an offscreen
+ // layer. Each eye then shows that layer as a panel fixed to the ship, far ahead like a collimated HUD. Unlike drawing
+@@ -29,3 +31,27 @@ void hud_vr_set_view();
+ 
+ // Shows the panel to the eye being rendered and gives the g3 view back to that eye
+ void hud_vr_draw_panel(const fov_t& eye_fov);
++
++// VR target brackets. While the HUD panel is drawn, the target frame of the engine's bracket gauge is not drawn into it.
++// It is queued here instead and drawn for each eye as a frame that stands on the tangent plane of a sphere around the
++// ship, at the direction of the target: always upright to the ship, never stretched, and not cut off at the edge of the
++// HUD panel. The name text is rendered into a label layer (one slot per bracket) and shown under the frame.
++// "VRHudBillboardBrackets=0" in the [Default] section of fs2_open.ini switches this off.
++constexpr int VR_LABEL_SLOTS = 4;
++constexpr int VR_LABEL_SLOT_H = 96;		// logical pixels, the label layer is as big as the screen
++
++struct vr_overlay_bracket {
++	vec3d corners[8];		// world space corners of the target's bounding box
++	vec3d pos;				// world position of the target
++	color clr;
++	SCP_string name, cls, dist;		// label lines (may be empty)
++	int objnum = -1;		// used to merge duplicates
++	int font_num = -1;
++	int label_slot = -1;	// set by the label pass: where the text is, and how big it is (logical pixels)
++	int label_w = 0;
++	int label_h = 0;
++};
++
++// true if the bracket gauge should queue its brackets instead of drawing them (while the VR HUD panel is drawn)
++bool vr_overlay_brackets_active();
++void vr_overlay_add(vr_overlay_bracket&& bracket);

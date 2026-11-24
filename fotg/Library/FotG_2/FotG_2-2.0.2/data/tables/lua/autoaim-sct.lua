@@ -8,12 +8,14 @@
 
 AutoAim = {
 
-	occluder_color = {165, 103, 43, 20},  --half transparent dark tan color
+	occluder_color = {165, 103, 43, 40},  --half transparent dark tan color
 	--targeting computer tint (VR HUD fix): "center" = soft tint only around the middle of the HUD (default),
 	--"full" = whole screen (original behaviour, very annoying in VR), "off" = no tint (the red box around the reticle remains)
 	occluder_mode = "center",
-	occluder_center_radius = 0.21, --"center" mode: tint radius as a fraction of the screen height
-	occluder_center_steps = 6, --"center" mode: number of stacked circles, more = smoother edge
+	occluder_center_shape = "rectangle", --"center" mode: "rectangle" or "circle"
+	occluder_center_radius = 0.1, --"center" mode: half the height of the tint (circle: its radius), as a fraction of the screen height. The circle used 0.21
+	occluder_center_aspect = 1.6, --"rectangle": width divided by height
+	occluder_center_steps = 3, --"center" mode: number of stacked shapes, more = smoother edge. The circle used 6
 	base_gauge_id_center = 9,
 	base_gauge_id_lead = 0,
 	default_fvec = 1500,
@@ -944,8 +946,17 @@ AutoAim.button_info = {
 					local max_r = sh * self.occluder_center_radius
 					local step_alpha = math.max(1, math.floor(occ[4] / steps + 0.5))
 					gr.setColor(occ[1], occ[2], occ[3], step_alpha)
+					local cx = sw * 0.5
+					local cy = sh * 0.5
+					local rectangle = (self.occluder_center_shape ~= "circle")
+					local aspect = self.occluder_center_aspect or 1.6
 					for k = steps, 1, -1 do
-						gr.drawCircle(max_r * k / steps, sw * 0.5, sh * 0.5, true)
+						local r = max_r * k / steps
+						if rectangle then
+							gr.drawRectangle(cx - r * aspect, cy - r, cx + r * aspect, cy + r, true)
+						else
+							gr.drawCircle(r, cx, cy, true)
+						end
 					end
 				end
 			end
