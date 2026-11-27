@@ -3,7 +3,7 @@
 A free, community fix for the HUD in **FreeSpace Open 26.0.1 in OpenXR VR**, made while playing
 [Fate of the Galaxy](https://www.fateofthegalaxy.net/) on a Valve Index.
 
-> **Status: early test release (v0.4.0, nightly add-ons; v0.3.0 for 26.0.1).** Tested on one headset (Valve Index) with Fate of the Galaxy 1.1.2, 1.1.3 and 2.0.2.
+> **Status: early test release (v0.4.0, nightly add-ons; v0.3.0 for 26.0.1).** Tested on one headset (Valve Index) with Fate of the Galaxy 1.1.2, 1.1.3, 2.0.2 and 2.0.3.
 > Reports from other VR users are very welcome - see "Feedback". The core HUD fix was also submitted to the FreeSpace Open
 > project as a pull request ([#8020](https://github.com/scp-fs2open/fs2open.github.com/pull/8020)); the FSO developers
 > reworked it themselves and merged their own version ([#8058](https://github.com/scp-fs2open/fs2open.github.com/pull/8058))
@@ -38,7 +38,8 @@ base, and two small things are still missing in it. v0.4.0 adds them on top of t
 | Download | What it does | Needs |
 |---|---|---|
 | `VRHUDfix_nightly_20261123_engine.zip` | **Billboard target frame** (undistorted, upright, never cut off at the HUD edge) and **2x HUD resolution** (much sharper text). OpenGL and Vulkan. | A mod that runs on a current nightly (tested: Fate of the Galaxy 2.0.2) |
-| `VRHUDfix_FotG2.0.2_targeting_computer_script.zip` | Fate of the Galaxy only: the targeting-computer tint becomes a small **rectangle** in the middle of the HUD instead of a full-screen orange tint. | Fate of the Galaxy 2.0.2 (works with the plain nightly and with the engine zip) |
+| `VRHUDfix_FotG2.0.3_targeting_computer_script.zip` | Fate of the Galaxy only: the targeting-computer tint becomes a small **rectangle** in the middle of the HUD instead of a full-screen orange tint. | Fate of the Galaxy **2.0.3** (works with the plain nightly and with the engine zip) |
+| `VRHUDfix_FotG2.0.2_targeting_computer_script.zip` | The same for Fate of the Galaxy 2.0.2. Do not use it on 2.0.3 (it would undo FotG's 2.0.3 changes to that file). | Fate of the Galaxy 2.0.2 |
 
 Install: unzip into your Knossos folder, see the README inside each zip. The engine zip creates its own folder and overwrites nothing
 (in the mod's settings in Knossos, section "FSO BUILD", you click "Browse", select the exe and pick it under "Direct Exec"). All engine changes explained in plain words: [`docs/ENGINE_CHANGES_EXPLAINED.md`](docs/ENGINE_CHANGES_EXPLAINED.md);

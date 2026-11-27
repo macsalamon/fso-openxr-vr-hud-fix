@@ -32,9 +32,10 @@ occluder_center_steps = 6,
 | `occluder_center_radius` | `"center"` mode: size of the glow as a fraction of the screen height. `0.21` roughly covers the area used for target lock. |
 | `occluder_center_steps` | `"center"` mode: number of stacked circles that make the fade. More = smoother edge, but every circle is very faint: with a very high count and a low opacity the green and blue are lost in the 8-bit HUD texture and the glow turns reddish. If that happens, lower the count or raise the opacity. (There is no automatic limit.) |
 
-### Rectangle instead of a circle (FotG 2.0.2 script, v0.4.0)
+### Rectangle instead of a circle (FotG 2.0.2 and 2.0.3 scripts, v0.4.0)
 
-The FotG 2.0.2 script (zip `VRHUDfix_FotG2.0.2_targeting_computer_script.zip`) draws the glow as a **rectangle** by default,
+The FotG 2.0.3 script (zip `VRHUDfix_FotG2.0.3_targeting_computer_script.zip`) and the FotG 2.0.2 script
+(zip `VRHUDfix_FotG2.0.2_targeting_computer_script.zip`) draw the glow as a **rectangle** by default,
 which fits the look of a cockpit targeting display better, especially in VR. The settings are:
 
 ```lua
@@ -55,7 +56,9 @@ occluder_center_steps = 3,
 | `occluder_center_steps` | Number of nested shapes that make the soft edge (rectangle default `3`, the circle used `6`). |
 
 The sizes are relative to the HUD, so the glow can look smaller or bigger depending on the HUD panel of the engine you use; change
-`occluder_center_radius` to taste. Differences to the original file: [`autoaim-sct-2.0.2-rectangle.diff`](autoaim-sct-2.0.2-rectangle.diff).
+`occluder_center_radius` to taste. Differences to the original file: [`autoaim-sct-2.0.3-rectangle.diff`](autoaim-sct-2.0.3-rectangle.diff)
+(2.0.3) and [`autoaim-sct-2.0.2-rectangle.diff`](autoaim-sct-2.0.2-rectangle.diff) (2.0.2). The changes are the same; the 2.0.3 file
+is FotG's 2.0.3 version (new TIE/es Escort values, lock-on also in padlock/track views) with them applied, so do not use the 2.0.2 file on 2.0.3.
 The FotG 1.1.x scripts in this folder still have the circle only.
 
 To get the original FotG behaviour back: set `occluder_mode = "full"` and `occluder_color = {165, 103, 23, 50}`, or restore FotG's
@@ -63,8 +66,8 @@ original file (a FotG update / "Verify/Repair" does that as well).
 
 ## Install
 
-1. Back up the original: `Library\FotG_R\FotG_R-<your version>\data\tables\lua\autoaim-sct.lua` (FotG 2: `Library\FotG_2\FotG_2-2.0.2\data\tables\lua\autoaim-sct.lua`).
-2. Unpack `VRHUDfix_optional_FotG_circle_script_FotG2.0.2.zip` (or `..._FotG1.1.3.zip` / `..._FotG1.1.2.zip`, from the Releases page) into your
+1. Back up the original: `Library\FotG_R\FotG_R-<your version>\data\tables\lua\autoaim-sct.lua` (FotG 2: `Library\FotG_2\FotG_2-2.0.3\data\tables\lua\autoaim-sct.lua`, or `FotG_2-2.0.2` for 2.0.2).
+2. Unpack `VRHUDfix_FotG2.0.3_targeting_computer_script.zip` (FotG 2.0.3; or `VRHUDfix_optional_FotG_circle_script_FotG2.0.2.zip` and `..._FotG1.1.3.zip` / `..._FotG1.1.2.zip`, from the Releases page) into your
    Knossos folder and confirm "Replace", or copy `Library/FotG_2/FotG_2-2.0.2/data/tables/lua/autoaim-sct.lua` (resp. `Library/FotG_R/FotG_R-1.1.3/...`, `...-1.1.2/...`)
    from this folder over the original.
 3. A FotG update or "Verify/Repair" will overwrite the file; repeat step 2 afterwards (and re-apply your settings).
